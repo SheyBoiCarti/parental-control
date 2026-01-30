@@ -1,0 +1,281 @@
+{
+  "apps": [
+    {
+      "name": "tiktok",
+      "display_name": "TikTok",
+      "domains": [
+        "*.tiktok.com",
+        "*.tiktokcdn.com",
+        "*.musical.ly",
+        "*.bytedance.com",
+        "*.bytecdn.cn",
+        "*.byteoversea.com",
+        "*.tiktokv.com",
+        "*.ibytedtos.com",
+        "*.ipstatp.com",
+        "*.sgpstatp.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "instagram",
+      "display_name": "Instagram",
+      "domains": [
+        "*.instagram.com",
+        "*.cdninstagram.com",
+        "*.ig.me",
+        "*.igcdn.com",
+        "i.instagram.com",
+        "graph.instagram.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "youtube",
+      "display_name": "YouTube",
+      "domains": [
+        "*.youtube.com",
+        "*.youtu.be",
+        "*.ytimg.com",
+        "*.googlevideo.com",
+        "*.youtube-nocookie.com",
+        "*.yt.be",
+        "*.youtube-ui.l.google.com",
+        "youtubei.googleapis.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "snapchat",
+      "display_name": "Snapchat",
+      "domains": [
+        "*.snapchat.com",
+        "*.snap.com",
+        "*.snapads.com",
+        "*.sc-cdn.net",
+        "*.sc-static.net",
+        "*.sc-jpl.com",
+        "*.bitmoji.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "facebook",
+      "display_name": "Facebook",
+      "domains": [
+        "*.facebook.com",
+        "*.fbcdn.net",
+        "*.fb.com",
+        "*.fb.me",
+        "*.fbsbx.com",
+        "*.facebook.net",
+        "connect.facebook.net",
+        "staticxx.facebook.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "messenger",
+      "display_name": "Messenger",
+      "domains": [
+        "*.messenger.com",
+        "*.m.me",
+        "edge-chat.messenger.com",
+        "mqtt-mini.facebook.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "whatsapp",
+      "display_name": "WhatsApp",
+      "domains": [
+        "*.whatsapp.com",
+        "*.whatsapp.net",
+        "web.whatsapp.com",
+        "pps.whatsapp.net",
+        "mmg.whatsapp.net"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "twitter",
+      "display_name": "Twitter/X",
+      "domains": [
+        "*.twitter.com",
+        "*.twimg.com",
+        "*.t.co",
+        "*.x.com",
+        "api.twitter.com",
+        "abs.twimg.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "netflix",
+      "display_name": "Netflix",
+      "domains": [
+        "*.netflix.com",
+        "*.nflxvideo.net",
+        "*.nflximg.net",
+        "*.nflxext.com",
+        "*.nflxso.net"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "discord",
+      "display_name": "Discord",
+      "domains": [
+        "*.discord.com",
+        "*.discord.gg",
+        "*.discordapp.com",
+        "*.discordapp.net",
+        "*.discord.media",
+        "gateway.discord.gg",
+        "cdn.discordapp.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "twitch",
+      "display_name": "Twitch",
+      "domains": [
+        "*.twitch.tv",
+        "*.ttvnw.net",
+        "*.jtvnw.net",
+        "*.twitchcdn.net",
+        "usher.ttvnw.net",
+        "api.twitch.tv"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "spotify",
+      "display_name": "Spotify",
+      "domains": [
+        "*.spotify.com",
+        "*.scdn.co",
+        "*.spotifycdn.com",
+        "*.pscdn.co",
+        "audio-fa.spotify.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "reddit",
+      "display_name": "Reddit",
+      "domains": [
+        "*.reddit.com",
+        "*.redd.it",
+        "*.redditmedia.com",
+        "*.redditstatic.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "pinterest",
+      "display_name": "Pinterest",
+      "domains": [
+        "*.pinterest.com",
+        "*.pinimg.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "telegram",
+      "display_name": "Telegram",
+      "domains": [
+        "*.telegram.org",
+        "*.t.me",
+        "*.telegram.me",
+        "*.telesco.pe",
+        "*.tg.me"
+      ],
+      "ip_ranges": [
+        "149.154.160.0/20",
+        "91.108.4.0/22",
+        "91.108.8.0/22",
+        "91.108.12.0/22",
+        "91.108.16.0/22",
+        "91.108.56.0/22"
+      ]
+    },
+    {
+      "name": "roblox",
+      "display_name": "Roblox",
+      "domains": [
+        "*.roblox.com",
+        "*.rbxcdn.com",
+        "*.robloxlabs.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "fortnite",
+      "display_name": "Fortnite",
+      "domains": [
+        "*.epicgames.com",
+        "*.fortnite.com",
+        "*.unrealengine.com",
+        "*.ol.epicgames.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "minecraft",
+      "display_name": "Minecraft",
+      "domains": [
+        "*.minecraft.net",
+        "*.mojang.com",
+        "*.minecraftservices.com",
+        "session.minecraft.net"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "zoom",
+      "display_name": "Zoom",
+      "domains": [
+        "*.zoom.us",
+        "*.zoom.com",
+        "*.zoomgov.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "tinder",
+      "display_name": "Tinder",
+      "domains": [
+        "*.tinder.com",
+        "*.gotinder.com",
+        "*.tindersparks.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "pornhub",
+      "display_name": "Adult Content (PH)",
+      "domains": [
+        "*.pornhub.com",
+        "*.phncdn.com"
+      ],
+      "ip_ranges": []
+    },
+    {
+      "name": "gambling",
+      "display_name": "Online Gambling",
+      "domains": [
+        "*.bet365.com",
+        "*.draftkings.com",
+        "*.fanduel.com",
+        "*.pokerstars.com",
+        "*.888casino.com",
+        "*.betway.com",
+        "*.williamhill.com",
+        "*.unibet.com",
+        "*.bovada.lv"
+      ],
+      "ip_ranges": []
+    }
+  ]
+}

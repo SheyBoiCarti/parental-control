@@ -1,0 +1,238 @@
+# Parental Control Network Manager
+
+A Linux-based network management tool for parental control that provides device monitoring, traffic inspection, app blocking, and bandwidth limiting through a web-based dashboard.
+
+## Features
+
+- **Device Discovery**: Automatic detection of all devices on your network using ARP scanning
+- **Traffic Monitoring**: ARP spoofing to position the system as a man-in-the-middle for traffic inspection
+- **App Blocking**: Block popular apps (TikTok, Instagram, YouTube, etc.) by inspecting DNS queries and TLS SNI
+- **Domain Blocking**: Block specific domains or domain patterns
+- **Bandwidth Limiting**: Per-device upload/download speed limits using Linux Traffic Control (tc)
+- **Device Blocking**: Complete network access block using iptables
+- **Real-time Dashboard**: Web-based interface with live updates via WebSocket
+- **Access Logging**: Track which domains devices are accessing
+
+## Requirements
+
+### System Requirements
+
+- Linux (Ubuntu/Debian or Raspberry Pi OS recommended)
+- Root/sudo access
+- Python 3.11+
+- Node.js 18+ (for frontend development)
+
+### Hardware Recommendations
+
+- Raspberry Pi 4 (2GB+ RAM) or similar
+- Ethernet connection to the network
+- Static IP address recommended
+
+## Installation
+
+### Quick Install
+
+```bash
+git clone https://github.com/your-repo/parental-control.git
+cd parental-control
+sudo ./scripts/install.sh
+```
+
+### Manual Installation
+
+1. Install system dependencies:
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-venv libpcap-dev iptables iproute2
+```
+
+2. Create Python virtual environment:
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+3. Build frontend (optional):
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+4. Configure the application:
+```bash
+cp backend/.env.example backend/.env
+# Edit .env with your network interface and settings
+```
+
+5. Run the application:
+```bash
+sudo ./backend/venv/bin/python backend/main.py -i eth0
+```
+
+## Configuration
+
+Edit `backend/.env` to configure:
+
+```env
+# Network interface to monitor
+NETWORK_INTERFACE=eth0
+
+# API server settings
+API_HOST=0.0.0.0
+API_PORT=8080
+
+# Authentication (optional)
+AUTH_USERNAME=admin
+AUTH_PASSWORD_HASH=  # bcrypt hash
+
+# Logging
+LOG_LEVEL=INFO
+```
+
+### Setting a Password
+
+Generate a bcrypt password hash:
+
+```bash
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'your_password', bcrypt.gensalt()).decode())"
+```
+
+Add the output to `AUTH_PASSWORD_HASH` in `.env`.
+
+## Usage
+
+### Starting the Service
+
+```bash
+# Manual start
+sudo python3 backend/main.py -i eth0
+
+# Using systemd
+sudo systemctl start parental-control
+sudo systemctl enable parental-control  # Start on boot
+```
+
+### Accessing the Dashboard
+
+Open `http://<server-ip>:8080` in your browser.
+
+Default credentials: `admin` / (no password)
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/devices` | GET | List all devices |
+| `/api/devices/{mac}` | GET | Get device details |
+| `/api/devices/{mac}` | PATCH | Update device (name, block, monitor) |
+| `/api/devices/{mac}/block` | POST/DELETE | Block/unblock device |
+| `/api/devices/{mac}/monitor` | POST/DELETE | Start/stop monitoring |
+| `/api/devices/{mac}/rules` | GET | List device rules |
+| `/api/devices/{mac}/rules/bandwidth` | POST | Set bandwidth limit |
+| `/api/devices/{mac}/rules/block-app` | POST | Block an app |
+| `/api/devices/{mac}/rules/block-domain` | POST | Block a domain |
+| `/api/stats/system` | GET | System statistics |
+| `/ws` | WebSocket | Real-time updates |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              PARENTAL CONTROL SYSTEM                        │
+├─────────────────────────────────────────────────────────────┤
+│  Web Dashboard (React) ←→ REST API (FastAPI) ←→ WebSocket   │
+├─────────────────────────────────────────────────────────────┤
+│  Core Engine:                                               │
+│  • Device Manager - ARP scanning, MAC tracking              │
+│  • ARP Spoofer - MITM positioning via Scapy                 │
+│  • Packet Analyzer - DNS/SNI inspection                     │
+│  • Traffic Controller - Bandwidth limits via tc             │
+│  • Content Blocker - App/domain blocking                    │
+│  • Device Blocker - iptables MAC filtering                  │
+├─────────────────────────────────────────────────────────────┤
+│  SQLite Database                                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Supported Apps for Blocking
+
+- TikTok
+- Instagram
+- YouTube
+- Snapchat
+- Facebook
+- Messenger
+- WhatsApp
+- Twitter/X
+- Netflix
+- Discord
+- Twitch
+- Spotify
+- Reddit
+- Telegram
+- Roblox
+- Fortnite
+- Minecraft
+- Zoom
+- And more...
+
+## Security Considerations
+
+- This tool requires root privileges for network operations
+- The dashboard should only be accessible on your local network
+- Use a strong password for the admin account
+- This tool should only be used on networks you own/administer
+- ARP spoofing can be detected by network security tools
+
+## Limitations
+
+- **Encrypted DNS (DoH/DoT)**: Can bypass DNS-based blocking
+  - Mitigation: Block known DoH provider IPs
+- **VPNs**: Bypass all blocking when active
+  - Mitigation: Can detect and block VPN protocols
+- **HTTPS**: Cannot inspect encrypted content
+  - Note: SNI inspection works without decryption
+- **Static IP devices**: May need manual IP updates
+
+## Troubleshooting
+
+### Service won't start
+
+```bash
+# Check logs
+sudo journalctl -u parental-control -f
+
+# Verify network interface
+ip link show
+```
+
+### No devices detected
+
+```bash
+# Verify interface is correct
+ip addr show eth0
+
+# Test ARP scanning manually
+sudo arp-scan -l
+```
+
+### Blocking not working
+
+```bash
+# Check iptables rules
+sudo iptables -L -n
+
+# Check tc configuration
+sudo tc qdisc show
+```
+
+## License
+
+MIT License
+
+## Disclaimer
+
+This software is intended for legitimate parental control and network administration purposes only. Use responsibly and in compliance with all applicable laws. The authors are not responsible for any misuse of this software.
