@@ -3,8 +3,7 @@
 import re
 import socket
 import struct
-import fcntl
-import subprocess
+from utils.commands import run_command
 import ipaddress
 from typing import Optional, Tuple, List
 import logging
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 def get_interface_ip(interface: str) -> Optional[str]:
     """Get the IP address of a network interface."""
+    import fcntl
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         ip_bytes = fcntl.ioctl(
@@ -179,22 +179,3 @@ def list_network_interfaces() -> List[str]:
     return interfaces
 
 
-def run_command(cmd: List[str], check: bool = True) -> Tuple[int, str, str]:
-    """
-    Run a system command safely.
-
-    Returns:
-        Tuple of (return_code, stdout, stderr)
-    """
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=check
-        )
-        return result.returncode, result.stdout, result.stderr
-    except subprocess.CalledProcessError as e:
-        return e.returncode, e.stdout or "", e.stderr or ""
-    except FileNotFoundError:
-        return -1, "", f"Command not found: {cmd[0]}"
