@@ -121,3 +121,25 @@ class Setting(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AdminCredential(Base):
+    """Private singleton administrator credential; never a general setting."""
+    __tablename__ = "admin_credentials"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class BrowserSession(Base):
+    __tablename__ = "browser_sessions"
+
+    token_digest = Column(String(64), primary_key=True)
+    credential_id = Column(Integer, ForeignKey("admin_credentials.id", ondelete="CASCADE"), nullable=False)
+    credential_version = Column(Integer, nullable=False)
+    csrf_token = Column(String(128), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False, index=True)

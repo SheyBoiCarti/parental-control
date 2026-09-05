@@ -1,72 +1,53 @@
-"""Authentication module using HTTP Basic Auth."""
+"""Shared REST authentication and browser request protection."""
 
 import secrets
-import bcrypt
 from typing import Optional
-from fastapi import HTTPException, Security, status
+
+from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from config import AUTH_USERNAME, AUTH_PASSWORD_HASH
+from core.auth_service import _hash, _verify
 
-security = HTTPBasic()
+COOKIE_NAME = "pc_session"
+security = HTTPBasic(auto_error=False)
 
 
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
-    salt = bcrypt.gensalt(rounds=12)
-    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    return _hash(password)
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against its hash."""
-    try:
-        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-    except Exception:
-        return False
+    return _verify(password, hashed)
 
 
-def get_current_user(credentials: HTTPBasicCredentials = Security(security)) -> str:
-    """
-    Verify HTTP Basic credentials and return username.
-
-    Raises HTTPException if authentication fails.
-    """
-    # If no password hash is configured, authentication is disabled
-    if not AUTH_PASSWORD_HASH:
-        return credentials.username
-
-    # Verify username
-    username_correct = secrets.compare_digest(
-        credentials.username.encode('utf-8'),
-        AUTH_USERNAME.encode('utf-8')
-    )
-
-    # Verify password
-    password_correct = verify_password(credentials.password, AUTH_PASSWORD_HASH)
-
-    if not (username_correct and password_correct):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-
-    return credentials.username
+def check_origin(request, *, required: bool = False) -> None:
+    origin = request.headers.get("origin")
+    if (required and not origin) or (origin is not None and origin not in request.app.state.config.allowed_origins):
+        raise HTTPException(403, "Origin not allowed")
 
 
-def optional_auth(credentials: Optional[HTTPBasicCredentials] = Security(security, auto_error=False)) -> Optional[str]:
-    """
-    Optional authentication - returns username if valid, None if no auth provided.
+def get_auth_service(request: Request):
+    service = request.app.state.auth_service
+    if service is None:
+        raise HTTPException(503, "Authentication service unavailable")
+    return service
 
-    Use this for endpoints that should work with or without auth.
-    """
-    if not AUTH_PASSWORD_HASH:
-        return "anonymous"
 
-    if credentials is None:
-        return None
-
-    try:
-        return get_current_user(credentials)
-    except HTTPException:
-        return None
+async def get_current_user(
+    request: Request,
+    credentials: Optional[HTTPBasicCredentials] = Security(security),
+) -> str:
+    check_origin(request)
+    token = request.cookies.get(COOKIE_NAME)
+    if not token and credentials is None:
+        raise HTTPException(401, "Authentication required", headers={"WWW-Authenticate": "Basic"})
+    service = get_auth_service(request)
+    if token:
+        identity = await service.validate_session(token)
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            check_origin(request, required=True)
+            csrf = request.headers.get("x-csrf-token", "")
+            if not secrets.compare_digest(csrf.encode(), identity.csrf_token.encode()):
+                raise HTTPException(403, "Invalid CSRF token")
+        return identity.username
+    return (await service.authenticate(credentials.username, credentials.password)).username

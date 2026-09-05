@@ -38,12 +38,17 @@ class DiscoveredDevice:
 class DeviceManager:
     """Manages network device discovery and tracking."""
 
-    def __init__(self, interface: str):
+    def __init__(
+        self,
+        interface: str,
+        gateway_ip: Optional[str] = None,
+        network_subnet: Optional[str] = None,
+    ):
         self.interface = interface
-        self.gateway_ip: Optional[str] = None
+        self.gateway_ip = gateway_ip
         self.gateway_mac: Optional[str] = None
         self.local_mac: Optional[str] = None
-        self.subnet: Optional[str] = None
+        self.subnet = network_subnet
         self._scan_task: Optional[asyncio.Task] = None
         self._running = False
         self._online_check_callbacks: List[callable] = []
@@ -58,8 +63,21 @@ class DeviceManager:
 
         # Get gateway
         gateway_info = get_default_gateway()
-        if gateway_info:
-            self.gateway_ip, gw_interface = gateway_info
+        if self.gateway_ip:
+            if gateway_info and gateway_info[1] != self.interface:
+                raise RuntimeError(
+                    f"Default gateway interface {gateway_info[1]} does not match {self.interface}"
+                )
+            gw_interface = self.interface
+            logger.info(f"Using configured gateway IP: {self.gateway_ip} on {gw_interface}")
+            self.gateway_mac = await self._resolve_mac(self.gateway_ip)
+        elif gateway_info:
+            detected_gateway, gw_interface = gateway_info
+            if gw_interface != self.interface:
+                raise RuntimeError(
+                    f"Default gateway interface {gw_interface} does not match {self.interface}"
+                )
+            self.gateway_ip = detected_gateway
             logger.info(f"Gateway IP: {self.gateway_ip} on {gw_interface}")
 
             # Get gateway MAC via ARP
@@ -67,7 +85,8 @@ class DeviceManager:
             logger.info(f"Gateway MAC: {self.gateway_mac}")
 
         # Get subnet
-        self.subnet = get_network_subnet(self.interface)
+        if self.subnet is None:
+            self.subnet = get_network_subnet(self.interface)
         logger.info(f"Network subnet: {self.subnet}")
 
         # Initialize database
