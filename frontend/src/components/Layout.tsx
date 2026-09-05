@@ -1,4 +1,5 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
+import { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useWebSocket } from '../contexts/WebSocketContext'
 import {
@@ -14,6 +15,7 @@ export default function Layout() {
   const location = useLocation()
   const { username, logout } = useAuth()
   const { isConnected } = useWebSocket()
+  const [logoutError, setLogoutError] = useState('')
 
   const navItems = [
     { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -75,13 +77,17 @@ export default function Layout() {
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-400">{username}</span>
             <button
-              onClick={logout}
+              onClick={() => {
+                setLogoutError('')
+                logout().catch(() => setLogoutError('Logout failed. Check the connection and try again.'))
+              }}
               className="flex items-center space-x-1 text-gray-400 hover:text-white transition-colors"
             >
               <LogOut size={16} />
               <span className="text-sm">Logout</span>
             </button>
           </div>
+          {logoutError && <p role="alert" className="text-sm text-red-300 mt-2">{logoutError}</p>}
         </div>
       </aside>
 

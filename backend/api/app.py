@@ -1,17 +1,22 @@
 """FastAPI application setup."""
 
 import logging
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import AppConfig
 from api.routes import devices_router, rules_router, stats_router, settings_router
-from api.websocket import websocket_endpoint
+from api.websocket import websocket_endpoint, ws_manager
+from api.routes.auth import router as auth_router, LoginLimiter
+from core.auth_service import AuthenticationError, AuthUnavailable
+from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
 
-def create_app() -> FastAPI:
+def create_app(config: AppConfig, *, auth_service=None) -> FastAPI:
     """Create and configure the FastAPI application."""
 
     app = FastAPI(
@@ -22,11 +27,34 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json"
     )
+    app.state.config = config
+    app.state.auth_service = auth_service
+    app.state.login_limiter = LoginLimiter()
+    app.state.ws_manager = ws_manager
+    if auth_service is not None:
+        auth_service.on_revoke(ws_manager.close_sessions)
+
+    @app.exception_handler(AuthenticationError)
+    async def authentication_error(request, error):
+        return JSONResponse({"detail": "Invalid credentials or session"}, status_code=401)
+
+    @app.exception_handler(AuthUnavailable)
+    @app.exception_handler(SQLAlchemyError)
+    async def unavailable(request, error):
+        return JSONResponse({"detail": "Service unavailable"}, status_code=503)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, error):
+        # FastAPI's default validation response includes submitted passwords.
+        return JSONResponse({"detail": [
+            {"loc": list(item["loc"]), "msg": item["msg"], "type": item["type"]}
+            for item in error.errors()
+        ]}, status_code=422)
 
     # CORS middleware for frontend
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # In production, restrict to frontend origin
+        allow_origins=list(config.allowed_origins),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -37,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(rules_router, prefix="/api")
     app.include_router(stats_router, prefix="/api")
     app.include_router(settings_router, prefix="/api")
+    app.include_router(auth_router, prefix="/api")
 
     # WebSocket endpoint
     @app.websocket("/ws")
