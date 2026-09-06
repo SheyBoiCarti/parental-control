@@ -1,14 +1,16 @@
 """Device rules API routes."""
 
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Response, status
 from pydantic import BaseModel, Field, field_validator
 from utils.domains import canonical_domain
+from utils.rules import canonical_rule
 from sqlalchemy import select, delete
 
 from api.auth import get_current_user
 from api.websocket import ws_manager, WSMessage
 from db.database import get_session
+from db.rules import save_rule
 from db.models import Device, DeviceRule
 
 router = APIRouter(prefix="/devices/{mac}/rules", tags=["rules"])
@@ -25,6 +27,11 @@ class AppBlockRuleRequest(BaseModel):
     """App block rule request."""
     app: str = Field(..., description="App name to block (e.g., 'tiktok')")
 
+    @field_validator("app")
+    @classmethod
+    def normalize_app(cls, value: str) -> str:
+        return canonical_rule("block_app", {"app": value})[0]
+
 
 class DomainBlockRuleRequest(BaseModel):
     """Domain block rule request."""
@@ -36,6 +43,12 @@ class DomainBlockRuleRequest(BaseModel):
         return canonical_domain(value)
 
 
+class EnforcementResponse(BaseModel):
+    state: str
+    last_error: Optional[str] = None
+    updated_at: str
+
+
 class RuleResponse(BaseModel):
     """Rule response model."""
     id: int
@@ -44,12 +57,49 @@ class RuleResponse(BaseModel):
     rule_value: dict
     is_active: bool
     created_at: Optional[str]
+    validation_error: Optional[str] = None
+    enforcement: EnforcementResponse
 
 
 class RuleListResponse(BaseModel):
     """List of rules response."""
     rules: List[RuleResponse]
     total: int
+
+
+def _rule_component(rule_type: str) -> str:
+    return "bandwidth" if rule_type == "bandwidth" else "content"
+
+
+def _rule_payload(rule: DeviceRule, result) -> dict:
+    if rule.validation_error:
+        enforcement = {
+            "state": "error",
+            "last_error": rule.validation_error,
+            "updated_at": result.components[_rule_component(rule.rule_type)].updated_at,
+        }
+    elif not rule.is_active:
+        enforcement = {
+            "state": "inactive",
+            "last_error": None,
+            "updated_at": result.components[_rule_component(rule.rule_type)].updated_at,
+        }
+    else:
+        enforcement = result.components[_rule_component(rule.rule_type)].to_dict()
+    return rule.to_dict() | {"enforcement": enforcement}
+
+
+def _apply_http_result(result, response: Response) -> None:
+    if result.state == "error":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "ENFORCEMENT_APPLY_FAILED",
+                "enforcement": result.to_dict(),
+            },
+        )
+    if result.state == "pending":
+        response.status_code = status.HTTP_202_ACCEPTED
 
 
 # App state reference
@@ -73,7 +123,10 @@ def get_app_state():
 async def get_device_by_mac(mac: str) -> Device:
     """Get device from database by MAC address."""
     from utils.mac_utils import normalize_mac
-    normalized_mac = normalize_mac(mac)
+    try:
+        normalized_mac = normalize_mac(mac)
+    except ValueError as error:
+        raise HTTPException(422, "Invalid MAC address") from error
 
     async with get_session() as session:
         result = await session.execute(
@@ -93,6 +146,7 @@ async def get_device_by_mac(mac: str) -> Device:
 @router.get("", response_model=RuleListResponse)
 async def list_rules(mac: str, user: str = Depends(get_current_user)):
     """Get all rules for a device."""
+    state = get_app_state()
     device = await get_device_by_mac(mac)
 
     async with get_session() as session:
@@ -101,7 +155,8 @@ async def list_rules(mac: str, user: str = Depends(get_current_user)):
         )
         rules = result.scalars().all()
 
-    rule_list = [RuleResponse(**r.to_dict()) for r in rules]
+    enforcement = await state.reconciler.get_status(mac)
+    rule_list = [RuleResponse(**_rule_payload(rule, enforcement)) for rule in rules]
 
     return RuleListResponse(rules=rule_list, total=len(rule_list))
 
@@ -110,64 +165,34 @@ async def list_rules(mac: str, user: str = Depends(get_current_user)):
 async def create_bandwidth_rule(
     mac: str,
     rule: BandwidthRuleRequest,
+    response: Response,
     user: str = Depends(get_current_user)
 ):
     """Create or update bandwidth limit for a device."""
     state = get_app_state()
     device = await get_device_by_mac(mac)
 
-    async with get_session() as session:
-        # Check for existing bandwidth rule
-        result = await session.execute(
-            select(DeviceRule).where(
-                DeviceRule.device_id == device.id,
-                DeviceRule.rule_type == "bandwidth"
-            )
-        )
-        existing = result.scalar_one_or_none()
+    db_rule = await save_rule(device.id, "bandwidth", {"download_kbps": rule.download_kbps, "upload_kbps": rule.upload_kbps})
 
-        rule_value = {
-            "download_kbps": rule.download_kbps,
-            "upload_kbps": rule.upload_kbps
-        }
-
-        if existing:
-            existing.rule_value = rule_value
-            existing.is_active = True
-            db_rule = existing
-        else:
-            db_rule = DeviceRule(
-                device_id=device.id,
-                rule_type="bandwidth",
-                rule_value=rule_value,
-                is_active=True
-            )
-            session.add(db_rule)
-
-        await session.commit()
-        await session.refresh(db_rule)
-
-    # Apply bandwidth limit
-    await state.traffic_controller.set_bandwidth_limit(
-        mac,
-        rule.download_kbps,
-        rule.upload_kbps
-    )
+    result = await state.reconciler.reconcile(mac)
+    payload = _rule_payload(db_rule, result)
 
     # Broadcast update
     await ws_manager.broadcast_rule_update({
         "action": "created",
         "device_mac": mac,
-        "rule": db_rule.to_dict()
+        "rule": payload,
     })
 
-    return RuleResponse(**db_rule.to_dict())
+    _apply_http_result(result, response)
+    return RuleResponse(**payload)
 
 
 @router.post("/block-app", response_model=RuleResponse)
 async def create_app_block_rule(
     mac: str,
     rule: AppBlockRuleRequest,
+    response: Response,
     user: str = Depends(get_current_user)
 ):
     """Block an app for a device."""
@@ -182,84 +207,58 @@ async def create_app_block_rule(
             detail=f"Unknown app: {rule.app}. Available: {list(available_apps.keys())}"
         )
 
-    async with get_session() as session:
-        # Check for existing rule
-        result = await session.execute(
-            select(DeviceRule).where(
-                DeviceRule.device_id == device.id,
-                DeviceRule.rule_type == "block_app"
-            )
-        )
-        existing_rules = result.scalars().all()
-
-        # Check if app already blocked
-        for existing in existing_rules:
-            if existing.rule_value.get("app") == rule.app:
-                return RuleResponse(**existing.to_dict())
-
-        rule_value = {"app": rule.app}
-        db_rule = DeviceRule(
-            device_id=device.id,
-            rule_type="block_app",
-            rule_value=rule_value,
-            is_active=True
-        )
-        session.add(db_rule)
-        await session.commit()
-        await session.refresh(db_rule)
+    db_rule = await save_rule(device.id, "block_app", {"app": rule.app})
 
     # Apply block
-    state.content_blocker.add_app_block(mac, rule.app)
+    await state.content_blocker._load_device_rules()
+    result = await state.reconciler.reconcile(mac)
+    payload = _rule_payload(db_rule, result)
 
     # Broadcast update
     await ws_manager.broadcast_rule_update({
         "action": "created",
         "device_mac": mac,
-        "rule": db_rule.to_dict()
+        "rule": payload,
     })
 
-    return RuleResponse(**db_rule.to_dict())
+    _apply_http_result(result, response)
+    return RuleResponse(**payload)
 
 
 @router.post("/block-domain", response_model=RuleResponse)
 async def create_domain_block_rule(
     mac: str,
     rule: DomainBlockRuleRequest,
+    response: Response,
     user: str = Depends(get_current_user)
 ):
     """Block a domain for a device."""
     state = get_app_state()
     device = await get_device_by_mac(mac)
 
-    async with get_session() as session:
-        rule_value = {"domain": rule.domain}
-        db_rule = DeviceRule(
-            device_id=device.id,
-            rule_type="block_domain",
-            rule_value=rule_value,
-            is_active=True
-        )
-        session.add(db_rule)
-        await session.commit()
-        await session.refresh(db_rule)
+    db_rule = await save_rule(device.id, "block_domain", {"domain": rule.domain})
 
     # Apply block
-    state.content_blocker.add_domain_block(mac, rule.domain)
+    await state.content_blocker._load_device_rules()
+    result = await state.reconciler.reconcile(mac)
+    payload = _rule_payload(db_rule, result)
 
     # Broadcast update
     await ws_manager.broadcast_rule_update({
         "action": "created",
         "device_mac": mac,
-        "rule": db_rule.to_dict()
+        "rule": payload,
     })
 
-    return RuleResponse(**db_rule.to_dict())
+    _apply_http_result(result, response)
+    return RuleResponse(**payload)
 
 
 @router.delete("/{rule_id}")
 async def delete_rule(
     mac: str,
     rule_id: int,
+    response: Response,
     user: str = Depends(get_current_user)
 ):
     """Delete a rule."""
@@ -287,13 +286,9 @@ async def delete_rule(
         await session.delete(rule)
         await session.commit()
 
-    # Remove applied rule
-    if rule_type == "bandwidth":
-        await state.traffic_controller.remove_bandwidth_limit(mac)
-    elif rule_type == "block_app":
-        state.content_blocker.remove_app_block(mac, rule_value.get("app"))
-    elif rule_type == "block_domain":
-        state.content_blocker.remove_domain_block(mac, rule_value.get("domain"))
+    if rule_type in {"block_app", "block_domain"}:
+        await state.content_blocker._load_device_rules()
+    result = await state.reconciler.reconcile(mac)
 
     # Broadcast update
     await ws_manager.broadcast_rule_update({
@@ -302,7 +297,12 @@ async def delete_rule(
         "rule_id": rule_id
     })
 
-    return {"status": "deleted", "rule_id": rule_id}
+    _apply_http_result(result, response)
+    return {
+        "status": "deleted",
+        "rule_id": rule_id,
+        "enforcement": result.to_dict(),
+    }
 
 
 @router.get("/apps/available")

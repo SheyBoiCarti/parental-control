@@ -4,14 +4,15 @@ import asyncio
 from datetime import datetime, timezone
 import os
 import sqlite3
+import json
 from uuid import uuid4
 
 from sqlalchemy import delete, select, text
 
 from config import AppConfig
-from db.models import AdminCredential, Base, Setting
+from db.models import AdminCredential, Base, DeviceEnforcement, Setting
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def _backup_if_needed(config: AppConfig) -> None:
@@ -53,6 +54,37 @@ def _migrate(connection, config: AppConfig) -> None:
             connection.execute(text("ALTER TABLE access_logs ADD COLUMN event_id VARCHAR(64)"))
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_access_logs_event_id ON access_logs(event_id)"))
         connection.execute(text("UPDATE schema_version SET version=2 WHERE id=1"))
+    if version < 3:
+        from utils.rules import canonical_rule
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(device_rules)"))}
+        for name in ("canonical_value", "validation_error"):
+            if name not in columns:
+                connection.execute(text(f"ALTER TABLE device_rules ADD COLUMN {name} VARCHAR(255)"))
+        seen = {}
+        rows = connection.execute(text("SELECT id,device_id,rule_type,rule_value,is_active FROM device_rules ORDER BY id")).mappings().all()
+        for row in rows:
+            try:
+                key, value = canonical_rule(row["rule_type"], json.loads(row["rule_value"]))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                connection.execute(text("UPDATE device_rules SET canonical_value=:key, validation_error='Invalid legacy rule; edit or remove this rule' WHERE id=:id"), {"key": f"legacy:{row['id']}", "id": row["id"]})
+                continue
+            identity = (row["device_id"], row["rule_type"], key)
+            if identity in seen:
+                retained = seen[identity]
+                if row["is_active"]:
+                    if row["rule_type"] == "bandwidth" and retained["active"]:
+                        value = {name: min(value[name], retained["value"][name]) for name in value}
+                    connection.execute(text("UPDATE device_rules SET is_active=1,rule_value=:value WHERE id=:id"), {"value": json.dumps(value), "id": retained["id"]})
+                    retained.update(active=True, value=value)
+                connection.execute(text("DELETE FROM device_rules WHERE id=:id"), {"id": row["id"]})
+            else:
+                connection.execute(text("UPDATE device_rules SET canonical_value=:key,rule_value=:value WHERE id=:id"), {"key": key, "value": json.dumps(value), "id": row["id"]})
+                seen[identity] = {"id": row["id"], "value": value, "active": bool(row["is_active"])}
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_device_rule_identity ON device_rules(device_id,rule_type,canonical_value)"))
+        connection.execute(text("UPDATE schema_version SET version=3 WHERE id=1"))
+    if version < 4:
+        DeviceEnforcement.__table__.create(connection, checkfirst=True)
+        connection.execute(text("UPDATE schema_version SET version=4 WHERE id=1"))
     credential = connection.execute(select(AdminCredential.id)).first()
     if credential is None and seed:
         connection.execute(AdminCredential.__table__.insert().values(

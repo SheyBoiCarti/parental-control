@@ -17,7 +17,7 @@ Environment=PATH=/opt/parental-control/backend/venv/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
 
 # Main executable
-ExecStart=/opt/parental-control/backend/venv/bin/python main.py
+ExecStart=/opt/parental-control/backend/venv/bin/python /opt/parental-control/backend/main.py --env-file /opt/parental-control/backend/.env
 
 # Restart policy
 Restart=on-failure

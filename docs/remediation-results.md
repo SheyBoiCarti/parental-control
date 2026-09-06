@@ -152,3 +152,38 @@ Implementation is underway. Startup repairs are verified locally; broader authen
 - System stats expose event queue depth, in-flight events, persisted/lost/retry counts and notification failures through the running worker. UI presentation remains pending.
 - Five packet-event tests pass, including regressions that first reproduced batch loss and duplicate notifications. Cancellation/stress coverage and durable notification recovery remain pending.
 - Full Python3.11 backend suite after event isolation and stats wiring: 88 passed, with two upstream warnings.
+
+## Persisted canonical rules checkpoint
+
+- Schema v3 adds canonical rule identity, uniqueness per device/type/value and legacy validation diagnostics. Equivalent legacy domain/app rules merge into the oldest ID with active intent preserved. Duplicate bandwidth rules share one identity; active duplicate limits merge using the stricter rate in each direction. Invalid legacy rules remain stored with a diagnostic instead of being deleted or crashing matcher loading.
+- Atomic SQLite upserts now back all three rule creation routes. Concurrent equivalent domain writes return the same rule ID. App/domain values are canonicalized before writes; invalid MACs on rule routes return422. Domain/app mutations reload matching from authoritative active rows instead of removing by string.
+- Validation: five migration tests passed, a full Python3.12 suite passed90 before the final input-validation addition, and ten targeted content/migration tests passed afterward. Existing deprecation warnings remain.
+- R20 remains partial: wider deletion/restart/concurrent API acceptance, legacy MAC equivalence, invalid-rule UI diagnostics and complete input bounds still need verification. Migration uses nullable added SQLite columns for compatibility; raw SQL identity-bypass guards are not yet implemented. R19 desired/applied reconciliation remains pending.
+
+## Interception target guard checkpoint
+
+- R24 partial: ARP target addition and DHCP address updates reject the gateway IP, gateway/appliance MACs, multicast/loopback/unspecified/reserved IPv4 addresses and non-unicast MACs before sending packets or changing target state.
+- Monitoring API validates targets before saving monitoring intent, including the general device update route when the device has an address. A regression verifies a gateway request returns422 without writing the device.
+- Ten target/lifecycle tests pass on Python3.12. Remaining: appliance-IP/topology/subnet checks, offline protected-device handling, guards across all block/rule paths and full reconciler integration. Linux topology acceptance remains pending.
+
+## Installer configuration preservation checkpoint
+
+- R05 partial: installer uses a tested exclusive-create helper for initial configuration and preserves existing configuration bytes on rerun. It applies owner-only file permissions and rejects symlink/non-file configuration paths. Both service definitions now pass the explicit env-file path.
+- Fresh configurations use the shipped template and detected interface. Password instructions use hidden-input reset; README now describes mandatory authentication, persisted credential precedence, HTTPS origins and explicit loopback development instead of passwordless login.
+- Two portable install-config tests passed (fresh template/interface and rerun preservation); Git Bash syntax validation passed. Linux permission/systemd installation, interrupted writes and full rerun deployment acceptance remain pending.
+
+## Traffic queue ownership checkpoint
+
+- R12 partial: traffic initialization now inspects qdiscs and refuses to replace existing configured queues. Untouched default noqueue entries are allowed. Successful qdisc additions are recorded and rollback/shutdown deletes only those recorded interface/location/handle specifications after checking the current kind.
+- Shutdown before initialization makes no kernel calls. Partial-start rollback removes only successfully created queues; a changed queue kind causes cleanup refusal while retaining the ownership record.
+- Seven traffic-command tests pass, covering foreign queue preservation, no-start cleanup, partial acquisition and changed-kind refusal. Persistent identity/restart recovery, child-resource inventory, same-kind replacement detection and IFB link ownership remain pending. This does not complete R12 or directional shaping (R08).
+- Full Python3.11 backend suite after queue ownership, canonical rules, target guards and installer helper changes: 104 passed, with two upstream warnings.
+
+## Directional bandwidth and reconciliation checkpoint
+
+- R08 partial: replaced the IFB/MARK design with distinct source/destination IPv4 flower classifiers and independent HTB classes on the appliance egress path. Upload and download use separate rates and class IDs. New-limit partial failures remove acquired filters/classes in reverse order; failed updates restore the prior address and rates. Nine bandwidth/traffic tests pass. Real Linux throughput and classifier-counter measurements remain required.
+- R10/R11/R19 partial: schema v4 stores per-device interception, blocking, content and bandwidth results. A per-MAC reconciler serializes changes, returns `pending` for unknown addresses, persists sanitized `error` results, replays every saved device at startup, and invalidates stale `applied` state before replay. Full blocking suspends bandwidth resources without deleting saved rules and removal reapplies the rule.
+- Startup now prepares traffic control, resets/replays intent, and only then starts ARP interception. ARP targets can be staged without sending spoof packets before forwarding is enabled. Scan callbacks and manual scans invoke reconciliation so newly discovered and changed addresses retry pending work.
+- Device and rule APIs include enforcement state. Mutations return HTTP 202 for accepted pending intent and HTTP 503 with `ENFORCEMENT_APPLY_FAILED` plus current component state when application fails. The dashboard labels pending/failed device protection separately, exposes migrated-rule validation errors and rule apply failures, and permits offline intent for later discovery.
+- Current portable evidence: full backend suites pass 120 tests on Python3.12 and Python3.11. Node22 ESLint, TypeScript, all 11 frontend tests and the Vite production build pass; npm audit reports zero vulnerabilities. Git Bash accepts the installer syntax. The known approximately 612 kB bundle warning and Python3.12 deprecation warnings remain visible.
+- Still open: the content component intentionally reports unavailable until the NFQUEUE inline engine exists; retry supervision beyond scan/startup, exact persistent kernel ownership, bandwidth accounting, coverage notices, production browser acceptance and disposable Linux namespace measurements remain required. This checkpoint does not complete R03, R08, R10, R11, R12, R16, R19, R21 or R24.

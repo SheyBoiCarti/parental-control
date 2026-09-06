@@ -51,3 +51,34 @@ async def test_forwarding_restores_original_value(monkeypatch, initial):
     finally:
         await spoofer.stop()
     assert state["enabled"] == initial
+
+
+@pytest.mark.asyncio
+async def test_enforcement_is_replayed_before_interception_starts():
+    calls = []
+
+    def async_step(name):
+        async def step():
+            calls.append(name)
+        return step
+
+    app = ParentalControlApp(AppConfig())
+    app.state = SimpleNamespace(
+        traffic_controller=SimpleNamespace(initialize=async_step("traffic-ready")),
+        reconciler=SimpleNamespace(
+            reset_runtime_state=async_step("state-reset"),
+            reconcile_all=async_step("intent-replayed"),
+        ),
+        arp_spoofer=SimpleNamespace(start=async_step("interception-started")),
+        packet_analyzer=SimpleNamespace(start=async_step("observation-started")),
+    )
+
+    await app._start_network_enforcement()
+
+    assert calls == [
+        "traffic-ready",
+        "state-reset",
+        "intent-replayed",
+        "interception-started",
+        "observation-started",
+    ]

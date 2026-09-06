@@ -25,3 +25,39 @@ it('adds an unknown device from a single update while retaining saved offline de
   expect(screen.getByText('Offline tablet')).toBeTruthy()
   expect(screen.getByText('New phone')).toBeTruthy()
 })
+
+it('shows desired blocking as pending instead of claiming the device is blocked', async () => {
+  const timestamp = '2026-09-06T00:00:00Z'
+  const pending = { state: 'pending', last_error: null, updated_at: timestamp }
+  const inactive = { state: 'inactive', last_error: null, updated_at: timestamp }
+  const saved = {
+    id: 3,
+    mac_address: 'AA:BB:CC:DD:EE:03',
+    friendly_name: 'Offline console',
+    is_online: false,
+    is_monitored: false,
+    is_blocked: true,
+    ip_address: null,
+    hostname: null,
+    vendor: null,
+    first_seen: null,
+    last_seen: null,
+    enforcement: {
+      ...pending,
+      components: {
+        interception: pending,
+        blocking: pending,
+        content: inactive,
+        bandwidth: inactive,
+      },
+    },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ devices: [saved], total: 1 })),
+  ))
+
+  render(<MemoryRouter><Devices /></MemoryRouter>)
+
+  await screen.findByText('Block pending')
+  expect(screen.queryByText('Blocked', { selector: 'span' })).toBeNull()
+})

@@ -90,10 +90,10 @@ Edit `backend/.env` to configure:
 NETWORK_INTERFACE=eth0
 
 # API server settings
-API_HOST=0.0.0.0
+API_HOST=127.0.0.1
 API_PORT=8080
 
-# Authentication (optional)
+# Authentication is required; saved credentials take precedence over bootstrap settings
 AUTH_USERNAME=admin
 AUTH_PASSWORD_HASH=  # bcrypt hash
 
@@ -103,13 +103,20 @@ LOG_LEVEL=INFO
 
 ### Setting a Password
 
-Generate a bcrypt password hash:
+Set the local administrator password using hidden input:
 
 ```bash
-python3 -c "import bcrypt; print(bcrypt.hashpw(b'your_password', bcrypt.gensalt()).decode())"
+sudo ./backend/venv/bin/python backend/main.py --env-file backend/.env --reset-password
 ```
 
-Add the output to `AUTH_PASSWORD_HASH` in `.env`.
+Saved credentials survive restarts and installer reruns. Run this command again
+only when you intend to reset them. Browser password changes revoke existing sessions.
+
+For remote browser access, configure `API_HOST`, `HTTPS_CERT_FILE`,
+`HTTPS_KEY_FILE`, and `ALLOWED_ORIGINS` with your exact HTTPS dashboard origin.
+For local HTTP development only, explicitly set `ALLOW_INSECURE_DEVELOPMENT=true`
+and `ALLOWED_ORIGINS=http://127.0.0.1:8080`. An empty origin list does not allow
+browser login. Keep `backend/.env` readable only by the service owner (`chmod 600`).
 
 ## Usage
 
@@ -117,7 +124,7 @@ Add the output to `AUTH_PASSWORD_HASH` in `.env`.
 
 ```bash
 # Manual start
-sudo python3 backend/main.py -i eth0
+sudo ./backend/venv/bin/python backend/main.py --env-file backend/.env -i eth0
 
 # Using systemd
 sudo systemctl start parental-control
@@ -126,9 +133,9 @@ sudo systemctl enable parental-control  # Start on boot
 
 ### Accessing the Dashboard
 
-Open `http://<server-ip>:8080` in your browser.
-
-Default credentials: `admin` / (no password)
+Open the HTTPS dashboard origin configured in `ALLOWED_ORIGINS`, or the loopback
+HTTP URL after explicitly configuring local development. Log in as the configured
+username (default `admin`) with the password you set. There is no passwordless login.
 
 ### API Endpoints
 

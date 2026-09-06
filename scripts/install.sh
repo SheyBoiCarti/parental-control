@@ -111,21 +111,8 @@ echo -e "${YELLOW}Default network interface: $DEFAULT_INTERFACE${NC}"
 
 # Create configuration
 echo -e "${GREEN}[8/8] Creating configuration...${NC}"
-cat > "$INSTALL_DIR/backend/.env" << EOF
-# Network Configuration
-NETWORK_INTERFACE=$DEFAULT_INTERFACE
-
-# API Configuration
-API_HOST=0.0.0.0
-API_PORT=8080
-
-# Authentication (generate hash with: python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode())")
-AUTH_USERNAME=admin
-AUTH_PASSWORD_HASH=
-
-# Logging
-LOG_LEVEL=INFO
-EOF
+python "$INSTALL_DIR/scripts/configure_install.py" \
+    "$INSTALL_DIR/backend/.env" "$INSTALL_DIR/backend/.env.example" "$DEFAULT_INTERFACE"
 
 # Install systemd service
 echo -e "${GREEN}Installing systemd service...${NC}"
@@ -139,7 +126,7 @@ Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR/backend
 Environment=PATH=$INSTALL_DIR/backend/venv/bin:/usr/bin:/bin
-ExecStart=$INSTALL_DIR/backend/venv/bin/python main.py
+ExecStart="$INSTALL_DIR/backend/venv/bin/python" "$INSTALL_DIR/backend/main.py" --env-file "$INSTALL_DIR/backend/.env"
 Restart=on-failure
 RestartSec=5
 
@@ -166,8 +153,8 @@ echo "  - Data directory: $INSTALL_DIR/data"
 echo "  - Network interface: $DEFAULT_INTERFACE"
 echo ""
 echo -e "${YELLOW}To set an admin password:${NC}"
-echo "  1. Generate hash: python3 -c \"import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())\""
-echo "  2. Add to $INSTALL_DIR/backend/.env as AUTH_PASSWORD_HASH"
+echo "  sudo $INSTALL_DIR/backend/venv/bin/python $INSTALL_DIR/backend/main.py --env-file $INSTALL_DIR/backend/.env --reset-password"
+echo "  Existing credentials are preserved. This command explicitly resets them."
 echo ""
 echo -e "${YELLOW}Commands:${NC}"
 echo "  Start service:   sudo systemctl start parental-control"
@@ -176,6 +163,7 @@ echo "  Enable on boot:  sudo systemctl enable parental-control"
 echo "  View logs:       sudo journalctl -u parental-control -f"
 echo ""
 echo -e "${YELLOW}Access the web dashboard at:${NC}"
-echo "  http://$(hostname -I | awk '{print $1}'):8080"
+echo "  New installs listen at http://127.0.0.1:8080 on the appliance. Existing listener settings are preserved."
+echo "  Configure HTTPS_CERT_FILE, HTTPS_KEY_FILE, API_HOST and ALLOWED_ORIGINS for remote access."
 echo ""
 echo -e "${GREEN}Start the service with: sudo systemctl start parental-control${NC}"

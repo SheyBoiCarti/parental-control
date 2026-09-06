@@ -28,6 +28,7 @@ class AppState:
     content_blocker: Any
     device_blocker: Any
     event_worker: Any = None
+    reconciler: Any = None
 
 
 def _component_types() -> dict[str, type[Any]]:
@@ -109,6 +110,8 @@ class ParentalControlApp:
 
     async def initialize(self) -> None:
         from api.routes import devices, rules, settings, stats
+        from core.reconciler import EnforcementReconciler
+        from db.database import get_session
         if self.auth_service is None:
             await self.initialize_auth()
         types = _component_types()
@@ -130,7 +133,12 @@ class ParentalControlApp:
         self.state.device_manager = manager
         await self.state.content_blocker.initialize()
         await self.state.device_blocker.initialize()
-        await self.state.device_blocker.sync_from_database()
+        self.state.reconciler = EnforcementReconciler(
+            get_session,
+            self.state.arp_spoofer,
+            self.state.device_blocker,
+            self.state.traffic_controller,
+        )
         devices.set_app_state(self.state)
         rules.set_app_state(self.state)
         stats.set_app_state(self.state)
@@ -169,21 +177,24 @@ class ParentalControlApp:
             from api.websocket import ws_manager
 
             assert self.state is not None
+            for device in devices:
+                await self.state.reconciler.reconcile(device.mac_address)
             mapping = {device.ip_address: device.mac_address for device in devices if device.ip_address}
             self.state.packet_analyzer.set_ip_mac_mapping(mapping)
             await ws_manager.broadcast_devices_list([device.to_dict() for device in devices])
-            for device in devices:
-                if (device.is_monitored and device.ip_address
-                        and device.mac_address in self.state.arp_spoofer.active_targets):
-                    await self.state.arp_spoofer.update_target_ip(
-                        device.mac_address, device.ip_address
-                    )
 
         self.state.device_manager.add_online_callback(on_device_scan)
+        await self._start_network_enforcement()
         await self.state.device_manager.start_periodic_scan(self.config.device_scan_interval)
+
+    async def _start_network_enforcement(self) -> None:
+        """Prepare owned rules and persisted intent before traffic interception."""
+        assert self.state is not None
+        await self.state.traffic_controller.initialize()
+        await self.state.reconciler.reset_runtime_state()
+        await self.state.reconciler.reconcile_all()
         await self.state.arp_spoofer.start()
         await self.state.packet_analyzer.start()
-        await self.state.traffic_controller.initialize()
 
     async def stop_services(self) -> None:
         from db.database import close_db

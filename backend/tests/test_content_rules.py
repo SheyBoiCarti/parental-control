@@ -34,3 +34,12 @@ def test_api_normalizes_domains_and_rejects_globs_and_urls():
     for domain in ["https://example.com", "foo?.example", "foo.*.com", "[ab].example"]:
         with pytest.raises(ValidationError):
             DomainBlockRuleRequest(domain=domain)
+
+
+@pytest.mark.asyncio
+async def test_invalid_mac_on_rule_route_is_validation_error():
+    from api.routes.rules import get_device_by_mac
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        await get_device_by_mac("invalid")
+    assert error.value.status_code == 422
