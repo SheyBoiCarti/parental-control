@@ -71,6 +71,10 @@ async def test_reviewed_schema_migration_preserves_devices_rules_and_logs(tmp_pa
             assert (await session.execute(text("SELECT id,friendly_name,is_blocked,is_monitored FROM devices"))).one() == (41, "Kids tablet", 1, 0)
             assert (await session.execute(text("SELECT id,device_id,is_active FROM device_rules"))).one() == (51, 41, 1)
             assert (await session.execute(text("SELECT id,device_id,domain FROM access_logs"))).one() == (61, 41, "example.test")
+            access_columns = {
+                row[1] for row in (await session.execute(text("PRAGMA table_info(access_logs)")))
+            }
+            assert {"rule_id", "protocol", "reason"} <= access_columns
             assert (await session.execute(text("SELECT id,bytes_sent,bytes_received FROM bandwidth_logs"))).one() == (71, 123, 456)
     finally:
         await database.close_db()
@@ -114,7 +118,7 @@ async def test_version_three_database_adds_enforcement_state_without_losing_inte
     try:
         await database.init_db()
         async with database.get_session() as session:
-            assert (await session.execute(text("SELECT version FROM schema_version"))).scalar_one() == 4
+            assert (await session.execute(text("SELECT version FROM schema_version"))).scalar_one() == 5
             columns = {
                 row[1]
                 for row in (await session.execute(text("PRAGMA table_info(device_enforcement)")))

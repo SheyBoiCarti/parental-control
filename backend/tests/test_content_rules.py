@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from core.content_blocker import ContentBlocker
+from core.content_blocker import BlockRule, ContentBlocker
 from api.routes.rules import DomainBlockRuleRequest
 
 MAC = "AA:BB:CC:DD:EE:01"
@@ -34,6 +34,23 @@ def test_api_normalizes_domains_and_rejects_globs_and_urls():
     for domain in ["https://example.com", "foo?.example", "foo.*.com", "[ab].example"]:
         with pytest.raises(ValidationError):
             DomainBlockRuleRequest(domain=domain)
+
+
+def test_match_identifies_the_enforced_rule_and_reason():
+    blocker = ContentBlocker()
+    blocker._device_rules[MAC] = [
+        BlockRule(
+            rule_type="domain",
+            value="example.com",
+            domains={"example.com"},
+            rule_id=42,
+        )
+    ]
+
+    match = blocker.match(MAC, "EXAMPLE.COM.")
+
+    assert match is not None
+    assert (match.rule_id, match.reason, match.app_name) == (42, "domain_rule", None)
 
 
 @pytest.mark.asyncio

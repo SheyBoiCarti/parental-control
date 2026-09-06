@@ -21,6 +21,7 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: backend/constraints.txt
+      - run: sudo apt-get update && sudo apt-get install -y libnetfilter-queue-dev
       - run: python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt -c backend/constraints.txt
       - run: python backend/main.py --help
       - run: python -m pytest backend/tests -q

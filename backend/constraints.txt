@@ -47,6 +47,8 @@ idna==3.19
     #   httpx
 iniconfig==2.3.0
     # via pytest
+netfilterqueue==1.1.0 ; sys_platform == 'linux'
+    # via -r backend/requirements.txt
 packaging==26.3
     # via
     #   build

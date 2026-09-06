@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getNetworkInfo, changePassword } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
+import CoverageNotice from '../components/CoverageNotice'
 import {
   Network,
   Shield,
@@ -97,6 +98,8 @@ export default function Settings() {
           {error}
         </div>
       )}
+
+      <CoverageNotice />
 
       {/* Network Configuration */}
       <div className="card">

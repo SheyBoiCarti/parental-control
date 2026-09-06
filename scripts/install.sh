@@ -52,7 +52,10 @@ apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    python3-dev \
+    build-essential \
     libpcap-dev \
+    libnetfilter-queue-dev \
     iptables \
     iproute2 \
     net-tools \

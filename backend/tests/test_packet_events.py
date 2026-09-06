@@ -44,7 +44,7 @@ async def test_database_retry_does_not_duplicate_events(tmp_path, monkeypatch):
     from core.packet_events import AccessEvent, persist_events
     from config import AppConfig
     from db import database
-    from db.models import Device, AccessLog
+    from db.models import Device, DeviceRule, AccessLog
     from sqlalchemy import select
     from unittest.mock import AsyncMock
     broadcast = AsyncMock()
@@ -53,15 +53,35 @@ async def test_database_retry_does_not_duplicate_events(tmp_path, monkeypatch):
     try:
         await database.init_db()
         async with database.get_session() as session:
-            session.add(Device(mac_address="AA:BB:CC:DD:EE:01"))
-        event = AccessEvent("AA:BB:CC:DD:EE:01", "example.com", "allowed")
+            session.add(Device(id=1, mac_address="AA:BB:CC:DD:EE:01"))
+            session.add(DeviceRule(
+                id=17,
+                device_id=1,
+                rule_type="block_domain",
+                rule_value={"domain": "example.com"},
+                canonical_value="example.com",
+            ))
+        event = AccessEvent(
+            "AA:BB:CC:DD:EE:01",
+            "example.com",
+            "blocked",
+            app_name="example-app",
+            rule_id=17,
+            protocol="tls_sni",
+            reason="domain_rule",
+        )
         await persist_events((event,))
         await persist_events((event,))
         async with database.get_session() as session:
             logs = list((await session.execute(select(AccessLog))).scalars())
             assert len(logs) == 1
-            assert logs[0].event_id == event.event_id
-            assert logs[0].timestamp == event.timestamp
+        assert logs[0].event_id == event.event_id
+        assert logs[0].timestamp == event.timestamp
+        assert (logs[0].rule_id, logs[0].protocol, logs[0].reason) == (
+            17,
+            "tls_sni",
+            "domain_rule",
+        )
         assert broadcast.await_count == 1
     finally:
         await database.close_db()

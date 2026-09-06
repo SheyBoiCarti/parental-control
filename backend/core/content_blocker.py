@@ -21,6 +21,15 @@ class BlockRule:
     rule_type: str  # 'app' or 'domain'
     value: str      # app name or domain pattern
     domains: Set[str] = field(default_factory=set)  # Resolved domains for app
+    rule_id: int | None = None
+
+
+@dataclass(frozen=True)
+class PolicyMatch:
+    rule_id: int | None
+    reason: str
+    value: str
+    app_name: str | None = None
 
 
 class ContentBlocker:
@@ -98,7 +107,8 @@ class ContentBlocker:
                         block_rule = BlockRule(
                             rule_type='app',
                             value=app_name,
-                            domains=set(self._app_signatures[app_name])
+                            domains=set(self._app_signatures[app_name]),
+                            rule_id=rule.id,
                         )
                         refreshed[mac].append(block_rule)
 
@@ -108,7 +118,8 @@ class ContentBlocker:
                         block_rule = BlockRule(
                             rule_type='domain',
                             value=canonical_domain(domain),
-                            domains={canonical_domain(domain)}
+                            domains={canonical_domain(domain)},
+                            rule_id=rule.id,
                         )
                         refreshed[mac].append(block_rule)
 
@@ -220,6 +231,11 @@ class ContentBlocker:
         Returns:
             Reason for blocking (app/domain name) or None if allowed
         """
+        match = self.match(mac, domain)
+        return match.value if match else None
+
+    def match(self, mac: str, domain: str) -> PolicyMatch | None:
+        """Return the exact rule responsible for a domain policy decision."""
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac not in self._device_rules:
@@ -234,9 +250,19 @@ class ContentBlocker:
                     # Match pattern like *.example.com against example.com and sub.example.com
                     base_domain = pattern[2:]
                     if domain_lower == base_domain or domain_lower.endswith('.' + base_domain):
-                        return rule.value
+                        return PolicyMatch(
+                            rule.rule_id,
+                            "app_rule" if rule.rule_type == "app" else "domain_rule",
+                            rule.value,
+                            rule.value if rule.rule_type == "app" else None,
+                        )
                 elif domain_lower == pattern.lower():
-                    return rule.value
+                    return PolicyMatch(
+                        rule.rule_id,
+                        "app_rule" if rule.rule_type == "app" else "domain_rule",
+                        rule.value,
+                        rule.value if rule.rule_type == "app" else None,
+                    )
 
         return None
 

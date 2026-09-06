@@ -68,6 +68,9 @@ export interface AccessLog {
   domain: string
   action: 'allowed' | 'blocked'
   app_name: string | null
+  rule_id: number | null
+  protocol: string | null
+  reason: string | null
 }
 
 export interface AvailableApp {
@@ -88,7 +91,12 @@ export function onSessionExpired(listener: () => void) {
   return () => { expiredListeners.delete(listener) }
 }
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message) }
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string,
+    public enforcement?: Partial<DeviceEnforcement>,
+  ) { super(message) }
 }
 
 // API request helper
@@ -118,8 +126,30 @@ async function apiRequest<T>(
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new ApiError(response.status, typeof error.detail === 'string' ? error.detail : `Request failed (${response.status})`)
+    const error: unknown = await response.json().catch(() => ({ detail: 'Unknown error' }))
+    const detail = error && typeof error === 'object' && 'detail' in error
+      ? (error as { detail: unknown }).detail
+      : 'Unknown error'
+    if (detail && typeof detail === 'object') {
+      const structured = detail as {
+        code?: unknown
+        enforcement?: { last_error?: unknown }
+      }
+      const code = typeof structured.code === 'string' ? structured.code : undefined
+      const message = typeof structured.enforcement?.last_error === 'string'
+        ? structured.enforcement.last_error
+        : code || `Request failed (${response.status})`
+      throw new ApiError(
+        response.status,
+        message,
+        code,
+        structured.enforcement as Partial<DeviceEnforcement> | undefined,
+      )
+    }
+    throw new ApiError(
+      response.status,
+      typeof detail === 'string' ? detail : `Request failed (${response.status})`,
+    )
   }
 
   return response.status === 204 ? undefined as T : response.json()

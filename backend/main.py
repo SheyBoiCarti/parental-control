@@ -29,6 +29,7 @@ class AppState:
     device_blocker: Any
     event_worker: Any = None
     reconciler: Any = None
+    content_enforcer: Any = None
 
 
 def _component_types() -> dict[str, type[Any]]:
@@ -111,6 +112,9 @@ class ParentalControlApp:
     async def initialize(self) -> None:
         from api.routes import devices, rules, settings, stats
         from core.reconciler import EnforcementReconciler
+        from core.content_enforcer import ContentEnforcer
+        from core.inline_inspector import InlineInspector
+        from core.nfqueue_worker import NFQueueWorker
         from db.database import get_session
         if self.auth_service is None:
             await self.initialize_auth()
@@ -133,11 +137,22 @@ class ParentalControlApp:
         self.state.device_manager = manager
         await self.state.content_blocker.initialize()
         await self.state.device_blocker.initialize()
+        inspector = InlineInspector(self.state.content_blocker)
+        worker = NFQueueWorker(
+            inspector,
+            lambda event: self.event_worker.submit(event) if self.event_worker else False,
+        )
+        self.state.content_enforcer = ContentEnforcer(
+            effective_config.network_interface,
+            inspector,
+            worker=worker,
+        )
         self.state.reconciler = EnforcementReconciler(
             get_session,
             self.state.arp_spoofer,
             self.state.device_blocker,
             self.state.traffic_controller,
+            self.state.content_enforcer,
         )
         devices.set_app_state(self.state)
         rules.set_app_state(self.state)
@@ -191,6 +206,7 @@ class ParentalControlApp:
         """Prepare owned rules and persisted intent before traffic interception."""
         assert self.state is not None
         await self.state.traffic_controller.initialize()
+        await self.state.content_enforcer.initialize()
         await self.state.reconciler.reset_runtime_state()
         await self.state.reconciler.reconcile_all()
         await self.state.arp_spoofer.start()
@@ -205,6 +221,10 @@ class ParentalControlApp:
                 self.state.device_manager.stop_periodic_scan,
                 self.state.arp_spoofer.stop,
                 self.state.packet_analyzer.stop,
+            ])
+            if getattr(self.state, "content_enforcer", None) is not None:
+                cleanup.append(self.state.content_enforcer.shutdown)
+            cleanup.extend([
                 self.state.traffic_controller.shutdown,
                 self.state.device_blocker.shutdown,
             ])

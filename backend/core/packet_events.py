@@ -37,6 +37,7 @@ async def persist_events(events):
             result = await session.execute(insert(AccessLog).values(
                 event_id=event.event_id, device_id=devices[event.mac], domain=event.domain,
                 action=event.action, app_name=event.app_name, timestamp=event.timestamp,
+                rule_id=event.rule_id, protocol=event.protocol, reason=event.reason,
             ).on_conflict_do_nothing(index_elements=["event_id"]).returning(AccessLog.id))
             if result.scalar_one_or_none() is not None:
                 inserted.append(event)
@@ -45,7 +46,8 @@ async def persist_events(events):
         try:
             await ws_manager.broadcast_access_log({
                 "event_id": event.event_id, "mac": event.mac, "domain": event.domain,
-                "action": event.action, "app": event.app_name,
+                "action": event.action, "app": event.app_name, "rule_id": event.rule_id,
+                "protocol": event.protocol, "reason": event.reason,
             })
         except Exception:
             broadcast_failed += 1
@@ -59,6 +61,9 @@ class AccessEvent:
     domain: str
     action: str
     app_name: str | None = None
+    rule_id: int | None = None
+    protocol: str | None = None
+    reason: str | None = None
     event_id: str = field(default_factory=lambda: uuid4().hex)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
