@@ -274,22 +274,33 @@ class PacketAnalyzer:
         """Start packet capture."""
         if self._running:
             return
+        if self._sniff_task is not None:
+            raise RuntimeError("Previous capture must be stopped before restarting")
 
         self._running = True
 
         def capture():
-            """Blocking sniff function."""
-            sniff(
-                iface=self.interface,
-                prn=self._process_packet,
-                filter="port 53 or port 443",  # DNS and HTTPS
-                store=0,
-                stop_filter=lambda _: not self._running
-            )
+            """Wake periodically even when the interface receives no packets."""
+            try:
+                while self._running:
+                    sniff(
+                        iface=self.interface,
+                        prn=self._process_packet,
+                        filter="port 53 or port 443",
+                        store=0,
+                        timeout=0.5,
+                        stop_filter=lambda _: not self._running,
+                    )
+            finally:
+                self._running = False
 
-        # Run in thread pool to not block async loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._sniff_task = loop.run_in_executor(None, capture)
+        # Retrieve failures immediately, while preserving the exception for stop.
+        def completed(task):
+            if not task.cancelled() and task.exception() is not None:
+                logger.error("Packet capture failed: %s", task.exception())
+        self._sniff_task.add_done_callback(completed)
 
         logger.info(f"Packet analyzer started on {self.interface}")
 
@@ -297,11 +308,13 @@ class PacketAnalyzer:
         """Stop packet capture."""
         self._running = False
 
-        # Sniff will stop on next packet due to stop_filter
-        if self._sniff_task:
-            # Give it a moment to stop
-            await asyncio.sleep(1)
-            self._sniff_task = None
+        if self._sniff_task is not None:
+            task = self._sniff_task
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2)
+            finally:
+                if task.done():
+                    self._sniff_task = None
 
         logger.info("Packet analyzer stopped")
 

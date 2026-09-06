@@ -74,7 +74,7 @@ source venv/bin/activate
 # Install Python dependencies
 echo -e "${GREEN}[4/8] Installing Python dependencies...${NC}"
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 
 # Create data directory
 echo -e "${GREEN}[5/8] Creating data directory...${NC}"
@@ -82,25 +82,24 @@ mkdir -p "$INSTALL_DIR/data"
 chown -R root:root "$INSTALL_DIR/data"
 chmod 700 "$INSTALL_DIR/data"
 
-# Check for Node.js (optional, for frontend development)
-echo -e "${GREEN}[6/8] Checking Node.js for frontend...${NC}"
-if command -v node &> /dev/null; then
-    NODE_VERSION=$(node --version)
-    echo -e "${YELLOW}Node.js $NODE_VERSION is installed${NC}"
-
-    # Build frontend
-    echo "Building frontend..."
-    cd "$INSTALL_DIR/frontend"
-    npm install
-    npm run build
-
-    # Copy built files to serve statically
-    mkdir -p "$INSTALL_DIR/backend/static"
-    cp -r dist/* "$INSTALL_DIR/backend/static/"
-else
-    echo -e "${YELLOW}Node.js not found. Skipping frontend build.${NC}"
-    echo -e "${YELLOW}Frontend can be built later with: cd frontend && npm install && npm run build${NC}"
+# A normal installation includes the production dashboard.
+echo -e "${GREEN}[6/8] Building the dashboard...${NC}"
+if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+    echo -e "${RED}Node.js 22 and npm are required to build the dashboard.${NC}"
+    exit 1
 fi
+if [ "$(node -p 'process.versions.node.split(".")[0]')" != "22" ]; then
+    echo -e "${RED}Install Node.js 22 before running this installer.${NC}"
+    exit 1
+fi
+cd "$INSTALL_DIR/frontend"
+npm ci
+npm run build
+test -s dist/index.html
+test -d dist/assets
+mkdir -p "$INSTALL_DIR/backend/static"
+cp -r dist/. "$INSTALL_DIR/backend/static/"
+test -s "$INSTALL_DIR/backend/static/index.html"
 
 # Detect network interface
 echo -e "${GREEN}[7/8] Detecting network interface...${NC}"

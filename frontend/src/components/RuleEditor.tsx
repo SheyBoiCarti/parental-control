@@ -1,13 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Rule, AvailableApp, getAvailableApps } from '../api/client'
 import { Trash2, Ban, Globe, Gauge } from 'lucide-react'
 
 interface RuleEditorProps {
   rules: Rule[]
-  onCreateBandwidthRule: (download: number, upload: number) => void
-  onCreateAppBlockRule: (app: string) => void
-  onCreateDomainBlockRule: (domain: string) => void
-  onDeleteRule: (ruleId: number) => void
+  onCreateBandwidthRule: (download: number, upload: number) => Promise<void>
+  onCreateAppBlockRule: (app: string) => Promise<void>
+  onCreateDomainBlockRule: (domain: string) => Promise<void>
+  onDeleteRule: (ruleId: number) => Promise<void>
 }
 
 export default function RuleEditor({
@@ -40,26 +40,40 @@ export default function RuleEditor({
 
   const bandwidthRule = rules.find((r) => r.rule_type === 'bandwidth')
 
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const pending = useRef(false)
+
+  const perform = async (operation: () => Promise<void>, onSuccess?: () => void) => {
+    if (pending.current) return
+    pending.current = true
+    setSaving(true)
+    setSaveError(null)
+    try {
+      await operation()
+      onSuccess?.()
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Failed to save rule')
+    } finally {
+      pending.current = false
+      setSaving(false)
+    }
+  }
+
   const handleBlockApp = () => {
-    if (selectedApp) {
-      onCreateAppBlockRule(selectedApp)
-      setSelectedApp('')
-    }
+    if (selectedApp) void perform(() => onCreateAppBlockRule(selectedApp), () => setSelectedApp(''))
   }
-
   const handleBlockDomain = () => {
-    if (customDomain.trim()) {
-      onCreateDomainBlockRule(customDomain.trim())
-      setCustomDomain('')
-    }
+    if (customDomain.trim()) void perform(() => onCreateDomainBlockRule(customDomain.trim()), () => setCustomDomain(''))
   }
-
   const handleSetBandwidth = () => {
-    onCreateBandwidthRule(downloadLimit, uploadLimit)
+    void perform(() => onCreateBandwidthRule(downloadLimit, uploadLimit))
   }
 
   return (
-    <div className="space-y-6">
+    <fieldset disabled={saving} className="space-y-6">
+      {saveError && <p role="alert" className="text-red-600">{saveError}</p>}
+      {saving && <p role="status">Saving rule…</p>}
       {/* Tab Navigation */}
       <div className="flex space-x-1 bg-gray-100 rounded-lg p-1">
         <button
@@ -139,7 +153,7 @@ export default function RuleEditor({
                       >
                         {appName.charAt(0).toUpperCase() + appName.slice(1)}
                         <button
-                          onClick={() => onDeleteRule(rule.id)}
+                          onClick={() => { void perform(() => onDeleteRule(rule.id)) }}
                           className="ml-2 hover:text-red-900"
                         >
                           <Trash2 size={14} />
@@ -188,7 +202,7 @@ export default function RuleEditor({
                       >
                         {domain}
                         <button
-                          onClick={() => onDeleteRule(rule.id)}
+                          onClick={() => { void perform(() => onDeleteRule(rule.id)) }}
                           className="ml-2 hover:text-orange-900"
                         >
                           <Trash2 size={14} />
@@ -254,7 +268,7 @@ export default function RuleEditor({
                   </p>
                 </div>
                 <button
-                  onClick={() => onDeleteRule(bandwidthRule.id)}
+                  onClick={() => { void perform(() => onDeleteRule(bandwidthRule.id)) }}
                   className="text-blue-600 hover:text-blue-800"
                 >
                   <Trash2 size={18} />
@@ -264,6 +278,6 @@ export default function RuleEditor({
           )}
         </div>
       )}
-    </div>
+    </fieldset>
   )
 }

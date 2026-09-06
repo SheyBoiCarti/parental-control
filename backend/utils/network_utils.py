@@ -29,6 +29,7 @@ def get_interface_ip(interface: str) -> Optional[str]:
 
 def get_interface_mac(interface: str) -> Optional[str]:
     """Get the MAC address of a network interface."""
+    import fcntl
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         info = fcntl.ioctl(
@@ -45,6 +46,7 @@ def get_interface_mac(interface: str) -> Optional[str]:
 
 def get_interface_netmask(interface: str) -> Optional[str]:
     """Get the netmask of a network interface."""
+    import fcntl
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         netmask_bytes = fcntl.ioctl(
@@ -160,8 +162,8 @@ def get_ip_forwarding_status() -> bool:
     try:
         with open('/proc/sys/net/ipv4/ip_forward', 'r') as f:
             return f.read().strip() == '1'
-    except IOError:
-        return False
+    except IOError as error:
+        raise RuntimeError("Cannot read original IP forwarding state") from error
 
 
 def list_network_interfaces() -> List[str]:

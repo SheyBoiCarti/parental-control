@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from scapy.all import ARP, Ether, sendp, getmacbyip, conf
 
 from utils.mac_utils import normalize_mac
-from utils.network_utils import enable_ip_forwarding, disable_ip_forwarding
+from utils.network_utils import enable_ip_forwarding, disable_ip_forwarding, get_ip_forwarding_status
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ class ARPSpoofer:
         self._targets: Dict[str, SpoofTarget] = {}  # MAC -> SpoofTarget
         self._spoof_task: Optional[asyncio.Task] = None
         self._running = False
+        self._original_forwarding: Optional[bool] = None
         self._spoof_interval = 2  # seconds between ARP packets
 
     @property
@@ -174,9 +175,9 @@ class ARPSpoofer:
             return
 
         # Enable IP forwarding so traffic passes through
+        self._original_forwarding = get_ip_forwarding_status()
         if not enable_ip_forwarding():
-            logger.error("Failed to enable IP forwarding")
-            return
+            raise RuntimeError("Failed to enable IP forwarding")
 
         self._running = True
 
@@ -208,8 +209,11 @@ class ARPSpoofer:
 
         self._targets.clear()
 
-        # Optionally disable IP forwarding
-        # disable_ip_forwarding()
+        if self._original_forwarding is not None:
+            restore = enable_ip_forwarding if self._original_forwarding else disable_ip_forwarding
+            if not restore():
+                raise RuntimeError("Failed to restore original IP forwarding state")
+            self._original_forwarding = None
 
         logger.info("ARP spoofer stopped, all ARP tables restored")
 

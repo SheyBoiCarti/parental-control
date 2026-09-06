@@ -45,6 +45,7 @@ class SystemStatsResponse(BaseModel):
     blocked_devices: int
     dns_queries_captured: int
     tls_connections_captured: int
+    event_pipeline: Optional[dict] = None
 
 
 # App state reference
@@ -96,7 +97,8 @@ async def get_system_stats(user: str = Depends(get_current_user)):
         monitored_devices=monitored_devices,
         blocked_devices=blocked_devices,
         dns_queries_captured=analyzer_stats.get("dns_queries", 0),
-        tls_connections_captured=analyzer_stats.get("tls_connections", 0)
+        tls_connections_captured=analyzer_stats.get("tls_connections", 0),
+        event_pipeline=state.event_worker.stats() if getattr(state, "event_worker", None) else None,
     )
 
 

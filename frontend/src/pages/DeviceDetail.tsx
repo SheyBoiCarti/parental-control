@@ -123,45 +123,29 @@ export default function DeviceDetail() {
   const handleCreateBandwidthRule = async (download: number, upload: number) => {
     if (!device) return
 
-    try {
-      await createBandwidthRule(device.mac_address, download, upload)
-      await fetchData()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create rule')
-    }
+    await createBandwidthRule(device.mac_address, download, upload)
+    await fetchData()
   }
 
   const handleCreateAppBlockRule = async (app: string) => {
     if (!device) return
 
-    try {
-      await createAppBlockRule(device.mac_address, app)
-      await fetchData()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to block app')
-    }
+    await createAppBlockRule(device.mac_address, app)
+    await fetchData()
   }
 
   const handleCreateDomainBlockRule = async (domain: string) => {
     if (!device) return
 
-    try {
-      await createDomainBlockRule(device.mac_address, domain)
-      await fetchData()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to block domain')
-    }
+    await createDomainBlockRule(device.mac_address, domain)
+    await fetchData()
   }
 
   const handleDeleteRule = async (ruleId: number) => {
     if (!device) return
 
-    try {
-      await deleteRule(device.mac_address, ruleId)
-      await fetchData()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete rule')
-    }
+    await deleteRule(device.mac_address, ruleId)
+    await fetchData()
   }
 
   if (isLoading) {

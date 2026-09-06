@@ -23,6 +23,8 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
 
     data_dir: Path = PROJECT_DIR / "data"
+    static_dir: Path = BACKEND_DIR / "static"
+    api_only: bool = False
     network_interface: str = "eth0"
     gateway_ip: str | None = None
     network_subnet: str | None = None
@@ -142,6 +144,7 @@ class AppConfig(BaseModel):
 
 
 _ENV_TO_FIELD = {
+    "STATIC_DIR": "static_dir", "API_ONLY": "api_only",
     "DATA_DIR": "data_dir", "NETWORK_INTERFACE": "network_interface",
     "GATEWAY_IP": "gateway_ip", "NETWORK_SUBNET": "network_subnet",
     "ARP_SPOOF_INTERVAL": "arp_spoof_interval",
@@ -165,7 +168,7 @@ _ENV_TO_FIELD = {
 
 
 def _mapped(values: dict[str, Any]) -> dict[str, Any]:
-    empty_uses_default = {"data_dir", "https_cert_file", "https_key_file", "app_signatures_file"}
+    empty_uses_default = {"data_dir", "static_dir", "https_cert_file", "https_key_file", "app_signatures_file"}
     return {
         field: values[name]
         for name, field in _ENV_TO_FIELD.items()
@@ -186,7 +189,7 @@ def load_config(env_file: Path | None, cli_overrides: dict[str, object] | None =
     # File and environment paths share the explicit configuration directory;
     # changing the service WorkingDirectory must not select another database.
     path_base = env_file.resolve().parent if env_file is not None else BACKEND_DIR
-    for field in ("data_dir", "https_cert_file", "https_key_file", "app_signatures_file"):
+    for field in ("data_dir", "static_dir", "https_cert_file", "https_key_file", "app_signatures_file"):
         if values.get(field):
             value = Path(values[field])
             values[field] = value.resolve() if value.is_absolute() else (path_base / value).resolve()

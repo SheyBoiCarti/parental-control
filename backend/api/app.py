@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import AppConfig
+from api.dashboard import install_dashboard
 from api.routes import devices_router, rules_router, stats_router, settings_router
 from api.websocket import websocket_endpoint, ws_manager
 from api.routes.auth import router as auth_router, LoginLimiter
@@ -93,4 +94,5 @@ def create_app(config: AppConfig, *, auth_service=None) -> FastAPI:
             }
         }
 
+    install_dashboard(app, config)
     return app
