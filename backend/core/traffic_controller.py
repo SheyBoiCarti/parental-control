@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import json
+import ipaddress
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -17,15 +19,16 @@ class BandwidthLimit:
     mac_address: str
     download_kbps: int  # Download limit in Kbps
     upload_kbps: int    # Upload limit in Kbps
-    class_id: int       # tc class ID
+    class_id: int       # Upload class; download uses the next class
+    ip_address: str | None = None
 
 
 class TrafficController:
     """
     Controls bandwidth using Linux Traffic Control (tc).
 
-    Uses HTB (Hierarchical Token Bucket) for rate limiting
-    with iptables MARK to classify packets by MAC address.
+    Uses separate HTB classes and IPv4 flower classifiers on forwarded
+    egress traffic: source IP for upload, destination IP for download.
     """
 
     def __init__(self, interface: str, *, runner=None):
@@ -34,9 +37,7 @@ class TrafficController:
         self._limits: Dict[str, BandwidthLimit] = {}  # MAC -> BandwidthLimit
         self._next_class_id = 10
         self._initialized = False
-
-        # IFB (Intermediate Functional Block) for ingress shaping
-        self.ifb_interface = "ifb0"
+        self._owned_qdiscs = []
 
     async def initialize(self):
         """Initialize tc qdisc and classes."""
@@ -48,8 +49,7 @@ class TrafficController:
         # Clean up any existing configuration
         await self._cleanup()
 
-        # Load IFB module for ingress shaping
-        await self._setup_ifb()
+        await self._assert_available(self.interface)
 
         # Setup HTB qdisc on main interface (egress/upload)
         await self._run_tc([
@@ -71,205 +71,156 @@ class TrafficController:
             "htb", "rate", "1000mbit", "ceil", "1000mbit"
         ])
 
-        # Setup HTB on IFB interface (ingress/download)
-        await self._run_tc([
-            "qdisc", "add", "dev", self.ifb_interface,
-            "root", "handle", "1:", "htb", "default", "9999"
-        ])
-
-        await self._run_tc([
-            "class", "add", "dev", self.ifb_interface,
-            "parent", "1:", "classid", "1:1",
-            "htb", "rate", "1000mbit", "ceil", "1000mbit"
-        ])
-
-        await self._run_tc([
-            "class", "add", "dev", self.ifb_interface,
-            "parent", "1:1", "classid", "1:9999",
-            "htb", "rate", "1000mbit", "ceil", "1000mbit"
-        ])
-
         self._initialized = True
         logger.info("Traffic controller initialized")
 
-    async def _setup_ifb(self):
-        """Setup IFB interface for ingress traffic shaping."""
-        # Load IFB kernel module
-        await self._runner.run(["modprobe", "ifb", "numifbs=1"])
+    async def _qdiscs(self, interface):
+        result = await self._runner.run(["tc", "-j", "qdisc", "show", "dev", interface])
+        try:
+            values = json.loads(result.stdout)
+            if not isinstance(values, list) or any(not isinstance(item, dict) for item in values):
+                raise ValueError("Invalid qdisc inventory")
+            return values
+        except (ValueError, TypeError) as error:
+            raise RuntimeError("Cannot inspect existing traffic control") from error
 
-        # Bring up IFB interface
-        await self._runner.run(["ip", "link", "set", "dev", self.ifb_interface, "up"])
-
-        # Redirect ingress traffic to IFB
-        await self._run_tc([
-            "qdisc", "add", "dev", self.interface,
-            "ingress", "handle", "ffff:"
-        ])
-
-        await self._run_tc([
-            "filter", "add", "dev", self.interface,
-            "parent", "ffff:", "protocol", "ip", "u32",
-            "match", "u32", "0", "0",
-            "action", "mirred", "egress", "redirect", "dev", self.ifb_interface
-        ])
+    async def _assert_available(self, interface):
+        for qdisc in await self._qdiscs(interface):
+            if qdisc.get("kind") == "noqueue" and qdisc.get("handle") == "0:":
+                continue
+            raise RuntimeError(f"Existing traffic control on {interface} must be preserved")
 
     async def _cleanup(self):
-        """Clean up tc configuration."""
-        # Remove qdisc from main interface
-        await self._run_tc(["qdisc", "del", "dev", self.interface, "root"], check=False)
-        await self._run_tc(["qdisc", "del", "dev", self.interface, "ingress"], check=False)
-
-        # Remove qdisc from IFB
-        await self._run_tc(["qdisc", "del", "dev", self.ifb_interface, "root"], check=False)
-
-        # Clean up iptables marks
-        await self._cleanup_iptables_marks()
-
-    async def _cleanup_iptables_marks(self):
-        """Remove only exact mark rules tracked by this controller."""
-        for mac, limit in self._limits.items():
-            await self._runner.run([
-                "iptables", "-t", "mangle", "-D", "PREROUTING",
-                "-m", "mac", "--mac-source", mac,
-                "-j", "MARK", "--set-mark", str(limit.class_id),
-            ])
+        """Delete only queues created successfully by this controller instance."""
+        failures = []
+        for interface, location, handle, kind in reversed(self._owned_qdiscs.copy()):
+            try:
+                inventory = await self._qdiscs(interface)
+                matching = [item for item in inventory if item.get("handle") == handle]
+                if matching:
+                    if len(matching) != 1 or matching[0].get("kind") != kind:
+                        raise RuntimeError("Traffic control ownership changed; cleanup refused")
+                    await self._runner.run(["tc", "qdisc", "del", "dev", interface, location, "handle", handle])
+                self._owned_qdiscs.remove((interface, location, handle, kind))
+            except Exception as error:
+                failures.append(error)
+        if failures:
+            raise ExceptionGroup("Traffic control cleanup failed", failures)
 
     async def _run_tc(self, args: list, check: bool = True) -> Tuple[int, str, str]:
         """Run tc command."""
         cmd = ["tc"] + args
         logger.debug(f"Running: {' '.join(cmd)}")
-        return await self._runner.run(cmd, check=check)
+        result = await self._runner.run(cmd, check=check)
+        if result.returncode == 0 and args[:2] == ["qdisc", "add"]:
+            interface = args[args.index("dev") + 1]
+            handle = args[args.index("handle") + 1]
+            location = "ingress" if "ingress" in args else "root"
+            kind = "ingress" if location == "ingress" else "htb"
+            self._owned_qdiscs.append((interface, location, handle, kind))
+        return result
 
     def _get_next_class_id(self) -> int:
         """Get next available class ID."""
         class_id = self._next_class_id
-        self._next_class_id += 1
+        if class_id >= 0x9000:
+            raise RuntimeError("Bandwidth class capacity exhausted")
+        self._next_class_id += 2
         return class_id
 
     async def set_bandwidth_limit(
-        self,
-        mac: str,
-        download_kbps: int,
-        upload_kbps: int
+        self, mac: str, download_kbps: int, upload_kbps: int, *, ip_address: str | None = None
     ) -> bool:
-        """
-        Set bandwidth limit for a device.
-
-        Args:
-            mac: Device MAC address
-            download_kbps: Download limit in Kbps
-            upload_kbps: Upload limit in Kbps
-
-        Returns:
-            True if successful
-        """
+        """Apply independent upload/download classes to a known device address."""
+        normalized_mac = normalize_mac(mac)
+        if ip_address is None:
+            raise ValueError("Bandwidth enforcement requires the current device IPv4 address")
+        address = str(ipaddress.IPv4Address(ip_address))
+        if any(type(rate) is not int or rate < 1 for rate in (download_kbps, upload_kbps)):
+            raise ValueError("Bandwidth rates must be positive integers")
         if not self._initialized:
             await self.initialize()
-
-        normalized_mac = normalize_mac(mac)
-
-        # Remove existing limit if present
-        if normalized_mac in self._limits:
-            if not await self.remove_bandwidth_limit(normalized_mac):
-                return False
-
-        class_id = self._get_next_class_id()
-
+        existing = self._limits.get(normalized_mac)
+        class_id = existing.class_id if existing else self._get_next_class_id()
+        created_resources = []
         try:
-            # Create tc class for upload (egress on main interface)
-            await self._run_tc([
-                "class", "add", "dev", self.interface,
-                "parent", "1:1", "classid", f"1:{class_id}",
-                "htb", "rate", f"{upload_kbps}kbit", "ceil", f"{upload_kbps}kbit"
-            ])
-
-            # Create tc class for download (egress on IFB)
-            await self._run_tc([
-                "class", "add", "dev", self.ifb_interface,
-                "parent", "1:1", "classid", f"1:{class_id}",
-                "htb", "rate", f"{download_kbps}kbit", "ceil", f"{download_kbps}kbit"
-            ])
-
-            # Use iptables to mark packets by MAC for upload
-            await self._runner.run([
-                "iptables", "-t", "mangle", "-A", "PREROUTING",
-                "-m", "mac", "--mac-source", normalized_mac,
-                "-j", "MARK", "--set-mark", str(class_id)
-            ])
-
-            # Add tc filter to match marked packets (upload)
-            await self._run_tc([
-                "filter", "add", "dev", self.interface,
-                "parent", "1:", "protocol", "ip",
-                "handle", str(class_id), "fw",
-                "flowid", f"1:{class_id}"
-            ])
-
-            # For download, we need to mark packets going TO the device
-            # This is trickier - we need the device's IP
-            # For now, mark by destination MAC on the IFB interface
-            # In practice, you'd need IP-based filtering here
-
-            # Store the limit
+            for offset, direction, rate in ((0, "src_ip", upload_kbps), (1, "dst_ip", download_kbps)):
+                identifier = class_id + offset
+                classid = f"1:{identifier:x}"
+                await self._run_tc([
+                    "class", "replace", "dev", self.interface, "parent", "1:1",
+                    "classid", classid, "htb", "rate", f"{rate}kbit", "ceil", f"{rate}kbit",
+                ])
+                created_resources.append(("class", identifier))
+                await self._run_tc([
+                    "filter", "replace", "dev", self.interface, "parent", "1:",
+                    "protocol", "ip", "pref", str(identifier), "handle", str(identifier),
+                    "flower", "skip_hw", direction, address + "/32", "classid", classid,
+                ])
+                created_resources.append(("filter", identifier))
             self._limits[normalized_mac] = BandwidthLimit(
-                mac_address=normalized_mac,
-                download_kbps=download_kbps,
-                upload_kbps=upload_kbps,
-                class_id=class_id
-            )
-
-            logger.info(
-                f"Set bandwidth limit for {normalized_mac}: "
-                f"↓{download_kbps}kbps ↑{upload_kbps}kbps"
+                normalized_mac, download_kbps, upload_kbps, class_id, address
             )
             return True
-
-        except Exception as e:
-            logger.error(f"Failed to set bandwidth limit: {e}")
+        except Exception:
+            logger.exception("Failed to apply directional bandwidth limit")
+            if existing is not None:
+                try:
+                    for offset, direction, rate in (
+                        (0, "src_ip", existing.upload_kbps),
+                        (1, "dst_ip", existing.download_kbps),
+                    ):
+                        identifier = existing.class_id + offset
+                        classid = f"1:{identifier:x}"
+                        await self._run_tc([
+                            "class", "replace", "dev", self.interface, "parent", "1:1",
+                            "classid", classid, "htb", "rate", f"{rate}kbit", "ceil", f"{rate}kbit",
+                        ])
+                        await self._run_tc([
+                            "filter", "replace", "dev", self.interface, "parent", "1:",
+                            "protocol", "ip", "pref", str(identifier), "handle", str(identifier),
+                            "flower", "skip_hw", direction, existing.ip_address + "/32",
+                            "classid", classid,
+                        ])
+                except Exception:
+                    logger.exception("Failed to restore previous bandwidth limit")
+            else:
+                for resource_type, identifier in reversed(created_resources):
+                    try:
+                        if resource_type == "filter":
+                            await self._run_tc([
+                                "filter", "del", "dev", self.interface, "parent", "1:",
+                                "protocol", "ip", "pref", str(identifier), "handle", str(identifier),
+                                "flower",
+                            ])
+                        else:
+                            await self._run_tc([
+                                "class", "del", "dev", self.interface, "parent", "1:1",
+                                "classid", f"1:{identifier:x}",
+                            ])
+                    except Exception:
+                        logger.exception("Failed to roll back partial bandwidth limit")
             return False
 
     async def remove_bandwidth_limit(self, mac: str) -> bool:
-        """Remove bandwidth limit for a device."""
         normalized_mac = normalize_mac(mac)
-
-        if normalized_mac not in self._limits:
+        limit = self._limits.get(normalized_mac)
+        if limit is None:
             return False
-
-        limit = self._limits[normalized_mac]
-        class_id = limit.class_id
-
         try:
-            # Remove tc filter
-            await self._run_tc([
-                "filter", "del", "dev", self.interface,
-                "parent", "1:", "protocol", "ip",
-                "handle", str(class_id), "fw"
-            ])
-
-            # Remove tc classes
-            await self._run_tc([
-                "class", "del", "dev", self.interface,
-                "parent", "1:1", "classid", f"1:{class_id}"
-            ])
-
-            await self._run_tc([
-                "class", "del", "dev", self.ifb_interface,
-                "parent", "1:1", "classid", f"1:{class_id}"
-            ])
-
-            # Remove iptables rule
-            await self._runner.run([
-                "iptables", "-t", "mangle", "-D", "PREROUTING",
-                "-m", "mac", "--mac-source", normalized_mac,
-                "-j", "MARK", "--set-mark", str(class_id)
-            ])
-
+            for identifier in (limit.class_id, limit.class_id + 1):
+                await self._run_tc([
+                    "filter", "del", "dev", self.interface, "parent", "1:",
+                    "protocol", "ip", "pref", str(identifier), "handle", str(identifier), "flower",
+                ])
+                await self._run_tc([
+                    "class", "del", "dev", self.interface, "parent", "1:1",
+                    "classid", f"1:{identifier:x}",
+                ])
             self._limits.pop(normalized_mac)
-            logger.info(f"Removed bandwidth limit for {normalized_mac}")
             return True
-
-        except Exception as e:
-            logger.error(f"Failed to remove bandwidth limit: {e}")
+        except Exception:
+            logger.exception("Failed to remove directional bandwidth limit")
             return False
 
     async def get_bandwidth_limit(self, mac: str) -> Optional[BandwidthLimit]:

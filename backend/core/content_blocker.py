@@ -67,6 +67,7 @@ class ContentBlocker:
 
     async def _load_device_rules(self):
         """Load device rules from database."""
+        refreshed = {}
         async with get_session() as session:
             result = await session.execute(
                 select(DeviceRule).where(
@@ -82,12 +83,14 @@ class ContentBlocker:
             devices = {d.id: d.mac_address for d in device_result.scalars().all()}
 
             for rule in rules:
+                if rule.validation_error:
+                    continue
                 mac = devices.get(rule.device_id)
                 if not mac:
                     continue
 
-                if mac not in self._device_rules:
-                    self._device_rules[mac] = []
+                if mac not in refreshed:
+                    refreshed[mac] = []
 
                 if rule.rule_type == 'block_app':
                     app_name = rule.rule_value.get('app')
@@ -97,7 +100,7 @@ class ContentBlocker:
                             value=app_name,
                             domains=set(self._app_signatures[app_name])
                         )
-                        self._device_rules[mac].append(block_rule)
+                        refreshed[mac].append(block_rule)
 
                 elif rule.rule_type == 'block_domain':
                     domain = rule.rule_value.get('domain')
@@ -107,9 +110,10 @@ class ContentBlocker:
                             value=canonical_domain(domain),
                             domains={canonical_domain(domain)}
                         )
-                        self._device_rules[mac].append(block_rule)
+                        refreshed[mac].append(block_rule)
 
-        logger.info(f"Loaded rules for {len(self._device_rules)} devices")
+        self._device_rules = refreshed
+        logger.info(f"Loaded rules for {len(refreshed)} devices")
 
     def add_app_block(self, mac: str, app_name: str) -> bool:
         """

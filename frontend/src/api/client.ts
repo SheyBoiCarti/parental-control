@@ -5,6 +5,18 @@
 const API_BASE = '/api'
 
 // Types
+export type EnforcementState = 'pending' | 'applied' | 'error' | 'inactive'
+
+export interface EnforcementStatus {
+  state: EnforcementState
+  last_error: string | null
+  updated_at: string
+}
+
+export interface DeviceEnforcement extends EnforcementStatus {
+  components: Record<'interception' | 'blocking' | 'content' | 'bandwidth', EnforcementStatus>
+}
+
 export interface Device {
   id: number
   mac_address: string
@@ -17,6 +29,7 @@ export interface Device {
   first_seen: string | null
   last_seen: string | null
   is_online: boolean
+  enforcement: DeviceEnforcement
 }
 
 export interface Rule {
@@ -26,6 +39,8 @@ export interface Rule {
   rule_value: Record<string, unknown>
   is_active: boolean
   created_at: string | null
+  validation_error: string | null
+  enforcement: EnforcementStatus
 }
 
 export interface SystemStats {

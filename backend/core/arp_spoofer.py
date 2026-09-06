@@ -1,6 +1,7 @@
 """ARP spoofing module for traffic interception."""
 
 import asyncio
+import ipaddress
 import logging
 from typing import Dict, Optional, Set
 from dataclasses import dataclass
@@ -55,6 +56,17 @@ class ARPSpoofer:
         """Get set of MAC addresses being spoofed."""
         return set(self._targets.keys())
 
+    def validate_target(self, ip: str, mac: str) -> None:
+        address = ipaddress.IPv4Address(ip)
+        normalized_mac = normalize_mac(mac)
+        protected = {normalize_mac(value) for value in (self.gateway_mac, self.local_mac) if value}
+        if normalized_mac in protected or str(address) == self.gateway_ip:
+            raise ValueError("Gateway and appliance cannot be interception targets")
+        if address.is_multicast or address.is_loopback or address.is_unspecified or address.is_reserved:
+            raise ValueError("Interception requires a unicast device address")
+        if int(normalized_mac[:2], 16) & 1 or normalized_mac == "00:00:00:00:00:00":
+            raise ValueError("Interception requires a unicast device MAC")
+
     def add_target(self, ip: str, mac: str) -> bool:
         """
         Add a device as a spoofing target.
@@ -66,6 +78,7 @@ class ARPSpoofer:
         Returns:
             True if added successfully
         """
+        self.validate_target(ip, mac)
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac in self._targets:
@@ -81,8 +94,10 @@ class ARPSpoofer:
         self._targets[normalized_mac] = target
         logger.info(f"Added spoofing target: {ip} ({normalized_mac})")
 
-        # Send initial spoof packets
-        self._send_spoof_packets(target)
+        # Targets may be staged while enforcement is prepared. Interception
+        # begins only after start() has enabled forwarding.
+        if self._running:
+            self._send_spoof_packets(target)
 
         return True
 
@@ -219,6 +234,7 @@ class ARPSpoofer:
 
     async def update_target_ip(self, mac: str, new_ip: str):
         """Update IP address for a target (e.g., after DHCP renewal)."""
+        self.validate_target(new_ip, mac)
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac in self._targets:

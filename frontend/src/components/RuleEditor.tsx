@@ -10,6 +10,21 @@ interface RuleEditorProps {
   onDeleteRule: (ruleId: number) => Promise<void>
 }
 
+function RuleState({ rule }: { rule: Rule }) {
+  const state = rule.enforcement?.state ?? 'pending'
+  const label = state === 'applied'
+    ? 'Applied'
+    : state === 'error' ? 'Failed to apply' : state === 'inactive' ? 'Inactive' : 'Pending'
+  return (
+    <>
+      <span className="ml-2 text-xs">{label}</span>
+      {rule.validation_error && (
+        <span className="ml-2 text-xs text-red-700">{rule.validation_error}</span>
+      )}
+    </>
+  )
+}
+
 export default function RuleEditor({
   rules,
   onCreateBandwidthRule,
@@ -152,6 +167,7 @@ export default function RuleEditor({
                         className="inline-flex items-center px-3 py-1 rounded-full bg-red-100 text-red-800 text-sm"
                       >
                         {appName.charAt(0).toUpperCase() + appName.slice(1)}
+                        <RuleState rule={rule} />
                         <button
                           onClick={() => { void perform(() => onDeleteRule(rule.id)) }}
                           className="ml-2 hover:text-red-900"
@@ -201,6 +217,7 @@ export default function RuleEditor({
                         className="inline-flex items-center px-3 py-1 rounded-full bg-orange-100 text-orange-800 text-sm font-mono"
                       >
                         {domain}
+                        <RuleState rule={rule} />
                         <button
                           onClick={() => { void perform(() => onDeleteRule(rule.id)) }}
                           className="ml-2 hover:text-orange-900"
@@ -266,6 +283,7 @@ export default function RuleEditor({
                     {' / '}
                     ↑ {((bandwidthRule.rule_value as { upload_kbps: number }).upload_kbps / 1000).toFixed(1)} Mbps
                   </p>
+                  <p className="text-xs text-blue-800"><RuleState rule={bandwidthRule} /></p>
                 </div>
                 <button
                   onClick={() => { void perform(() => onDeleteRule(bandwidthRule.id)) }}

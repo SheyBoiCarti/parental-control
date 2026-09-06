@@ -2,10 +2,11 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from config import load_config
 from db import database
+from db.models import Base
 
 
 @pytest.mark.asyncio
@@ -87,5 +88,42 @@ async def test_bootstrap_can_seed_an_initialized_database_without_a_credential(t
         await database.init_db()
         async with database.get_session() as session:
             assert (await session.execute(text("SELECT password_hash FROM admin_credentials"))).scalar_one() == "later-seed"
+    finally:
+        await database.close_db()
+
+
+@pytest.mark.asyncio
+async def test_version_three_database_adds_enforcement_state_without_losing_intent(tmp_path):
+    path = tmp_path / "parental_control.db"
+    sync_engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(sync_engine)
+    sync_engine.dispose()
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            DROP TABLE device_enforcement;
+            CREATE TABLE schema_version (
+                id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL
+            );
+            INSERT INTO schema_version VALUES (1, 3);
+            INSERT INTO devices (
+                id, mac_address, is_monitored, is_blocked, is_online
+            ) VALUES (81, 'AA:BB:CC:DD:EE:81', 1, 0, 0);
+        """)
+
+    database.configure_database(load_config(None, {"data_dir": tmp_path}))
+    try:
+        await database.init_db()
+        async with database.get_session() as session:
+            assert (await session.execute(text("SELECT version FROM schema_version"))).scalar_one() == 4
+            columns = {
+                row[1]
+                for row in (await session.execute(text("PRAGMA table_info(device_enforcement)")))
+            }
+            assert {"device_id", "component", "state", "last_error", "updated_at"} <= columns
+            assert (
+                await session.execute(
+                    text("SELECT is_monitored,is_blocked FROM devices WHERE id=81")
+                )
+            ).one() == (1, 0)
     finally:
         await database.close_db()
