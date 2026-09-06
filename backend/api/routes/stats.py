@@ -27,6 +27,9 @@ class AccessLogEntry(BaseModel):
     domain: str
     action: str
     app_name: Optional[str]
+    rule_id: Optional[int]
+    protocol: Optional[str]
+    reason: Optional[str]
 
 
 class AccessStatsResponse(BaseModel):
@@ -240,7 +243,10 @@ async def get_device_access_stats(
                 timestamp=log.timestamp.isoformat(),
                 domain=log.domain,
                 action=log.action,
-                app_name=log.app_name
+                app_name=log.app_name,
+                rule_id=log.rule_id,
+                protocol=log.protocol,
+                reason=log.reason,
             )
             for log in logs
         ]

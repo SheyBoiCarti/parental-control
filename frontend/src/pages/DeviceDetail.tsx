@@ -21,6 +21,8 @@ import {
 } from '../api/client'
 import RuleEditor from '../components/RuleEditor'
 import BandwidthChart from '../components/BandwidthChart'
+import CoverageNotice from '../components/CoverageNotice'
+import { AccessLogTable } from '../components/AccessLogTable'
 import {
   ArrowLeft,
   Edit2,
@@ -32,7 +34,6 @@ import {
   EyeOff,
   Wifi,
   WifiOff,
-  Clock,
 } from 'lucide-react'
 
 export default function DeviceDetail() {
@@ -257,6 +258,10 @@ export default function DeviceDetail() {
         </div>
       )}
 
+      {(device.is_monitored || device.is_blocked || rules.some((rule) => rule.is_active)) && (
+        <CoverageNotice />
+      )}
+
       {/* Device Info */}
       <div className="card">
         <h2 className="text-lg font-semibold mb-4">Device Information</h2>
@@ -329,43 +334,7 @@ export default function DeviceDetail() {
       {/* Access Logs */}
       <div className="card">
         <h2 className="text-lg font-semibold mb-4">Recent Activity</h2>
-        {accessLogs.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left py-2 px-3">Time</th>
-                  <th className="text-left py-2 px-3">Domain</th>
-                  <th className="text-left py-2 px-3">Action</th>
-                  <th className="text-left py-2 px-3">App</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accessLogs.map((log, i) => (
-                  <tr key={i} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-3 text-gray-500">
-                      <Clock size={12} className="inline mr-1" />
-                      {new Date(log.timestamp).toLocaleTimeString()}
-                    </td>
-                    <td className="py-2 px-3 font-mono text-xs">{log.domain}</td>
-                    <td className="py-2 px-3">
-                      <span
-                        className={`badge ${
-                          log.action === 'blocked' ? 'badge-blocked' : 'badge-online'
-                        }`}
-                      >
-                        {log.action}
-                      </span>
-                    </td>
-                    <td className="py-2 px-3">{log.app_name || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="text-gray-500 text-center py-4">No recent activity</p>
-        )}
+        <AccessLogTable logs={accessLogs} />
       </div>
     </div>
   )

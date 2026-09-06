@@ -9,6 +9,7 @@ aiosqlite>=0.19.0
 
 # Network Operations
 scapy>=2.5.0
+NetfilterQueue>=1.1.0,<2; sys_platform == "linux"
 
 # Data Validation
 pydantic>=2.5.0

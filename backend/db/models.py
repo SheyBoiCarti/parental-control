@@ -123,6 +123,9 @@ class AccessLog(Base):
     domain = Column(String(255), nullable=False)
     action = Column(String(20), nullable=False)  # allowed, blocked
     app_name = Column(String(100), nullable=True)  # Detected app if any
+    rule_id = Column(Integer, ForeignKey("device_rules.id", ondelete="SET NULL"), nullable=True)
+    protocol = Column(String(32), nullable=True)
+    reason = Column(String(255), nullable=True)
 
     # Relationships
     device = relationship("Device", back_populates="access_logs")

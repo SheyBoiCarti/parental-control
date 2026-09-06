@@ -162,6 +162,8 @@ class EnforcementReconciler:
         states = {name: ("inactive", None) for name in COMPONENTS}
         if not desired["interception"]:
             self._arp.remove_target(mac)
+            if self._content is not None:
+                await self._content.remove_device(mac)
             if self._blocker.is_blocked(mac):
                 if not await self._blocker.unblock_device(mac):
                     states["blocking"] = ("error", "Block removal failed")
@@ -181,6 +183,8 @@ class EnforcementReconciler:
         if desired["blocking"]:
             if await self._blocker.block_device(mac):
                 await self._traffic.remove_bandwidth_limit(mac)
+                if self._content is not None:
+                    await self._content.remove_device(mac)
                 states["blocking"] = ("applied", None)
                 if desired["content"]:
                     states["content"] = ("applied", None)
@@ -208,6 +212,10 @@ class EnforcementReconciler:
                     )
                     if not applied:
                         enforcement_error = enforcement_error or "Content application failed"
+            elif self._content is not None:
+                if not await self._content.remove_device(mac):
+                    states["content"] = ("error", "Content removal failed")
+                    enforcement_error = enforcement_error or "Content removal failed"
 
             if desired["bandwidth"]:
                 value = bandwidth_rule.rule_value

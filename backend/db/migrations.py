@@ -12,7 +12,7 @@ from sqlalchemy import delete, select, text
 from config import AppConfig
 from db.models import AdminCredential, Base, DeviceEnforcement, Setting
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _backup_if_needed(config: AppConfig) -> None:
@@ -85,6 +85,16 @@ def _migrate(connection, config: AppConfig) -> None:
     if version < 4:
         DeviceEnforcement.__table__.create(connection, checkfirst=True)
         connection.execute(text("UPDATE schema_version SET version=4 WHERE id=1"))
+    if version < 5:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(access_logs)"))}
+        for name, sql_type in (
+            ("rule_id", "INTEGER"),
+            ("protocol", "VARCHAR(32)"),
+            ("reason", "VARCHAR(255)"),
+        ):
+            if name not in columns:
+                connection.execute(text(f"ALTER TABLE access_logs ADD COLUMN {name} {sql_type}"))
+        connection.execute(text("UPDATE schema_version SET version=5 WHERE id=1"))
     credential = connection.execute(select(AdminCredential.id)).first()
     if credential is None and seed:
         connection.execute(AdminCredential.__table__.insert().values(

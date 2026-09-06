@@ -43,7 +43,7 @@ sudo ./scripts/install.sh
 1. Install system dependencies:
 ```bash
 sudo apt update
-sudo apt install python3 python3-pip python3-venv libpcap-dev iptables iproute2
+sudo apt install python3 python3-pip python3-venv python3-dev build-essential libpcap-dev libnetfilter-queue-dev iptables iproute2
 ```
 
 2. Create Python virtual environment:

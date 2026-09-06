@@ -65,6 +65,7 @@ async def test_enforcement_is_replayed_before_interception_starts():
     app = ParentalControlApp(AppConfig())
     app.state = SimpleNamespace(
         traffic_controller=SimpleNamespace(initialize=async_step("traffic-ready")),
+        content_enforcer=SimpleNamespace(initialize=async_step("content-ready")),
         reconciler=SimpleNamespace(
             reset_runtime_state=async_step("state-reset"),
             reconcile_all=async_step("intent-replayed"),
@@ -77,6 +78,7 @@ async def test_enforcement_is_replayed_before_interception_starts():
 
     assert calls == [
         "traffic-ready",
+        "content-ready",
         "state-reset",
         "intent-replayed",
         "interception-started",
