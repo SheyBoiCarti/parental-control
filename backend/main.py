@@ -27,6 +27,7 @@ class AppState:
     traffic_controller: Any
     content_blocker: Any
     device_blocker: Any
+    event_worker: Any = None
 
 
 def _component_types() -> dict[str, type[Any]]:
@@ -96,6 +97,7 @@ class ParentalControlApp:
         self.config = config
         self.state: AppState | None = None
         self.auth_service = None
+        self.event_worker = None
 
     async def initialize_auth(self) -> None:
         from core.auth_service import AuthService
@@ -136,59 +138,32 @@ class ParentalControlApp:
         self._setup_packet_callbacks()
 
     def _setup_packet_callbacks(self) -> None:
+        from core.packet_events import AccessEvent
         assert self.state is not None
 
-        def on_dns_query(query) -> None:
-            assert self.state is not None
-            block_reason = self.state.content_blocker.should_block(query.src_mac, query.domain)
-            asyncio.create_task(self._log_access(
-                query.src_mac,
-                query.domain,
-                "blocked" if block_reason else "allowed",
-                block_reason,
-            ))
+        def observed(mac, domain):
+            if self.event_worker is not None:
+                # Passive capture observes traffic; only an inline verdict can
+                # truthfully produce a blocked event.
+                self.event_worker.submit(AccessEvent(mac, domain, "allowed"))
 
-        def on_tls_connection(connection) -> None:
-            assert self.state is not None
-            block_reason = self.state.content_blocker.should_block(
-                connection.src_mac, connection.sni
-            )
-            if block_reason:
-                asyncio.create_task(self._log_access(
-                    connection.src_mac, connection.sni, "blocked", block_reason
-                ))
-
-        self.state.packet_analyzer.add_dns_callback(on_dns_query)
-        self.state.packet_analyzer.add_tls_callback(on_tls_connection)
-
-    async def _log_access(
-        self, mac: str, domain: str, action: str, app_name: str | None
-    ) -> None:
-        from api.websocket import ws_manager
-        from db.database import get_session
-        from db.models import AccessLog, Device
-        from sqlalchemy import select
-
-        try:
-            async with get_session() as session:
-                result = await session.execute(select(Device).where(Device.mac_address == mac))
-                device = result.scalar_one_or_none()
-                if device:
-                    session.add(AccessLog(
-                        device_id=device.id,
-                        domain=domain,
-                        action=action,
-                        app_name=app_name,
-                    ))
-                    await session.commit()
-                    await ws_manager.broadcast_access_log({
-                        "mac": mac, "domain": domain, "action": action, "app": app_name
-                    })
-        except Exception:
-            logging.getLogger(__name__).exception("Failed to log access")
+        self.state.packet_analyzer.add_dns_callback(
+            lambda query: observed(query.src_mac, query.domain)
+        )
+        self.state.packet_analyzer.add_tls_callback(
+            lambda connection: observed(connection.src_mac, connection.sni)
+        )
 
     async def start_services(self) -> None:
+        from core.packet_events import EventWorker, persist_events
         assert self.state is not None
+        self.event_worker = EventWorker(
+            persist_events, capacity=self.config.event_queue_capacity,
+            batch_size=self.config.event_batch_size,
+            flush_seconds=self.config.event_flush_seconds,
+        )
+        await self.event_worker.start()
+        self.state.event_worker = self.event_worker
 
         async def on_device_scan(devices) -> None:
             from api.websocket import ws_manager
@@ -213,13 +188,27 @@ class ParentalControlApp:
     async def stop_services(self) -> None:
         from db.database import close_db
 
+        cleanup = []
         if self.state is not None:
-            await self.state.device_manager.stop_periodic_scan()
-            await self.state.arp_spoofer.stop()
-            await self.state.packet_analyzer.stop()
-            await self.state.traffic_controller.shutdown()
-            await self.state.device_blocker.shutdown()
-        await close_db()
+            cleanup.extend([
+                self.state.device_manager.stop_periodic_scan,
+                self.state.arp_spoofer.stop,
+                self.state.packet_analyzer.stop,
+                self.state.traffic_controller.shutdown,
+                self.state.device_blocker.shutdown,
+            ])
+        if self.event_worker is not None:
+            cleanup.append(self.event_worker.stop)
+        cleanup.append(close_db)
+        failures = []
+        for stop in cleanup:
+            try:
+                await stop()
+            except Exception as error:
+                logging.getLogger(__name__).exception("Service cleanup failed")
+                failures.append(error)
+        if failures:
+            raise ExceptionGroup("Service shutdown failed", failures)
 
     async def run(self) -> None:
         import uvicorn

@@ -1,7 +1,6 @@
 """Content blocker for app and domain blocking."""
 
 import asyncio
-import fnmatch
 import logging
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
@@ -11,6 +10,7 @@ from sqlalchemy import select
 from db.database import get_session
 from db.models import AppSignature, DeviceRule
 from utils.mac_utils import normalize_mac
+from utils.domains import canonical_domain
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,8 @@ class ContentBlocker:
     """
     Manages content blocking based on domain patterns.
 
-    Works with the PacketAnalyzer to block traffic based on:
-    - DNS queries (return NXDOMAIN)
-    - TLS SNI (drop connection)
+    Resolves app/domain policy for DNS names and TLS SNI. This class returns
+    a policy decision; the inline packet worker must enforce the verdict.
     """
 
     def __init__(self):
@@ -53,8 +52,16 @@ class ContentBlocker:
             result = await session.execute(select(AppSignature))
             signatures = result.scalars().all()
 
-            for sig in signatures:
-                self._app_signatures[sig.app_name] = sig.domains
+            refreshed = {
+                sig.app_name: [canonical_domain(domain) for domain in sig.domains]
+                for sig in signatures
+            }
+
+        self._app_signatures = refreshed
+        for rules in self._device_rules.values():
+            for rule in rules:
+                if rule.rule_type == 'app':
+                    rule.domains = set(refreshed.get(rule.value, []))
 
         logger.info(f"Loaded {len(self._app_signatures)} app signatures")
 
@@ -97,8 +104,8 @@ class ContentBlocker:
                     if domain:
                         block_rule = BlockRule(
                             rule_type='domain',
-                            value=domain,
-                            domains={domain}
+                            value=canonical_domain(domain),
+                            domains={canonical_domain(domain)}
                         )
                         self._device_rules[mac].append(block_rule)
 
@@ -161,6 +168,7 @@ class ContentBlocker:
 
     def add_domain_block(self, mac: str, domain: str) -> bool:
         """Block a domain for a device."""
+        domain = canonical_domain(domain)
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac not in self._device_rules:
@@ -183,6 +191,7 @@ class ContentBlocker:
 
     def remove_domain_block(self, mac: str, domain: str) -> bool:
         """Remove domain block for a device."""
+        domain = canonical_domain(domain)
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac not in self._device_rules:
@@ -212,7 +221,7 @@ class ContentBlocker:
         if normalized_mac not in self._device_rules:
             return None
 
-        domain_lower = domain.lower()
+        domain_lower = canonical_domain(domain)
 
         for rule in self._device_rules[normalized_mac]:
             for pattern in rule.domains:
@@ -222,8 +231,6 @@ class ContentBlocker:
                     base_domain = pattern[2:]
                     if domain_lower == base_domain or domain_lower.endswith('.' + base_domain):
                         return rule.value
-                elif fnmatch.fnmatch(domain_lower, pattern.lower()):
-                    return rule.value
                 elif domain_lower == pattern.lower():
                     return rule.value
 

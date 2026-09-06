@@ -2,11 +2,10 @@
 
 import asyncio
 import logging
-import re
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
-from utils.network_utils import run_command
+from utils.commands import CommandRunner
 from utils.mac_utils import normalize_mac
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,8 @@ class TrafficController:
     with iptables MARK to classify packets by MAC address.
     """
 
-    def __init__(self, interface: str):
+    def __init__(self, interface: str, *, runner=None):
+        self._runner = runner if runner is not None else CommandRunner()
         self.interface = interface
         self._limits: Dict[str, BandwidthLimit] = {}  # MAC -> BandwidthLimit
         self._next_class_id = 10
@@ -95,10 +95,10 @@ class TrafficController:
     async def _setup_ifb(self):
         """Setup IFB interface for ingress traffic shaping."""
         # Load IFB kernel module
-        run_command(["modprobe", "ifb", "numifbs=1"], check=False)
+        await self._runner.run(["modprobe", "ifb", "numifbs=1"])
 
         # Bring up IFB interface
-        run_command(["ip", "link", "set", "dev", self.ifb_interface, "up"], check=False)
+        await self._runner.run(["ip", "link", "set", "dev", self.ifb_interface, "up"])
 
         # Redirect ingress traffic to IFB
         await self._run_tc([
@@ -126,38 +126,19 @@ class TrafficController:
         await self._cleanup_iptables_marks()
 
     async def _cleanup_iptables_marks(self):
-        """Remove all MARK rules from mangle table."""
-        # Get existing rules
-        ret, stdout, _ = run_command(
-            ["iptables", "-t", "mangle", "-L", "PREROUTING", "-n", "--line-numbers"],
-            check=False
-        )
-
-        if ret != 0:
-            return
-
-        # Parse and delete rules with MARK (in reverse order)
-        lines = stdout.strip().split('\n')
-        rule_numbers = []
-
-        for line in lines:
-            if 'MARK' in line:
-                match = re.match(r'^(\d+)', line)
-                if match:
-                    rule_numbers.append(int(match.group(1)))
-
-        # Delete in reverse order to preserve line numbers
-        for num in sorted(rule_numbers, reverse=True):
-            run_command(
-                ["iptables", "-t", "mangle", "-D", "PREROUTING", str(num)],
-                check=False
-            )
+        """Remove only exact mark rules tracked by this controller."""
+        for mac, limit in self._limits.items():
+            await self._runner.run([
+                "iptables", "-t", "mangle", "-D", "PREROUTING",
+                "-m", "mac", "--mac-source", mac,
+                "-j", "MARK", "--set-mark", str(limit.class_id),
+            ])
 
     async def _run_tc(self, args: list, check: bool = True) -> Tuple[int, str, str]:
         """Run tc command."""
         cmd = ["tc"] + args
         logger.debug(f"Running: {' '.join(cmd)}")
-        return run_command(cmd, check=check)
+        return await self._runner.run(cmd, check=check)
 
     def _get_next_class_id(self) -> int:
         """Get next available class ID."""
@@ -189,7 +170,8 @@ class TrafficController:
 
         # Remove existing limit if present
         if normalized_mac in self._limits:
-            await self.remove_bandwidth_limit(normalized_mac)
+            if not await self.remove_bandwidth_limit(normalized_mac):
+                return False
 
         class_id = self._get_next_class_id()
 
@@ -209,7 +191,7 @@ class TrafficController:
             ])
 
             # Use iptables to mark packets by MAC for upload
-            run_command([
+            await self._runner.run([
                 "iptables", "-t", "mangle", "-A", "PREROUTING",
                 "-m", "mac", "--mac-source", normalized_mac,
                 "-j", "MARK", "--set-mark", str(class_id)
@@ -253,7 +235,7 @@ class TrafficController:
         if normalized_mac not in self._limits:
             return False
 
-        limit = self._limits.pop(normalized_mac)
+        limit = self._limits[normalized_mac]
         class_id = limit.class_id
 
         try:
@@ -262,26 +244,27 @@ class TrafficController:
                 "filter", "del", "dev", self.interface,
                 "parent", "1:", "protocol", "ip",
                 "handle", str(class_id), "fw"
-            ], check=False)
+            ])
 
             # Remove tc classes
             await self._run_tc([
                 "class", "del", "dev", self.interface,
                 "parent", "1:1", "classid", f"1:{class_id}"
-            ], check=False)
+            ])
 
             await self._run_tc([
                 "class", "del", "dev", self.ifb_interface,
                 "parent", "1:1", "classid", f"1:{class_id}"
-            ], check=False)
+            ])
 
             # Remove iptables rule
-            run_command([
+            await self._runner.run([
                 "iptables", "-t", "mangle", "-D", "PREROUTING",
                 "-m", "mac", "--mac-source", normalized_mac,
                 "-j", "MARK", "--set-mark", str(class_id)
-            ], check=False)
+            ])
 
+            self._limits.pop(normalized_mac)
             logger.info(f"Removed bandwidth limit for {normalized_mac}")
             return True
 

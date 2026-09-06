@@ -11,7 +11,7 @@ from sqlalchemy import delete, select, text
 from config import AppConfig
 from db.models import AdminCredential, Base, Setting
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _backup_if_needed(config: AppConfig) -> None:
@@ -47,6 +47,12 @@ def _migrate(connection, config: AppConfig) -> None:
         seed = saved or config.auth_password_hash
         connection.execute(delete(Setting).where(Setting.key == "password_hash"))
         connection.execute(text("INSERT INTO schema_version (id,version) VALUES (1,1) ON CONFLICT(id) DO UPDATE SET version=1"))
+    if version < 2:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(access_logs)"))}
+        if "event_id" not in columns:
+            connection.execute(text("ALTER TABLE access_logs ADD COLUMN event_id VARCHAR(64)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_access_logs_event_id ON access_logs(event_id)"))
+        connection.execute(text("UPDATE schema_version SET version=2 WHERE id=1"))
     credential = connection.execute(select(AdminCredential.id)).first()
     if credential is None and seed:
         connection.execute(AdminCredential.__table__.insert().values(

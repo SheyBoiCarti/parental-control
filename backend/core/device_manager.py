@@ -104,7 +104,7 @@ class DeviceManager:
             ether = Ether(dst="ff:ff:ff:ff:ff:ff")
             packet = ether / arp
 
-            result = srp(packet, iface=self.interface, timeout=3, retry=2, verbose=0)[0]
+            result = (await asyncio.to_thread(srp, packet, iface=self.interface, timeout=3, retry=2, verbose=0))[0]
 
             if result:
                 return normalize_mac(result[0][1].hwsrc)
@@ -121,8 +121,7 @@ class DeviceManager:
             List of discovered devices
         """
         if not self.subnet:
-            logger.error("No subnet configured for scanning")
-            return []
+            raise RuntimeError("No subnet configured for scanning")
 
         logger.info(f"Scanning network: {self.subnet}")
         discovered = []
@@ -134,19 +133,19 @@ class DeviceManager:
             packet = ether / arp
 
             # Send and receive
-            result = srp(packet, iface=self.interface, timeout=5, retry=1, verbose=0)[0]
+            result = (await asyncio.to_thread(srp, packet, iface=self.interface, timeout=5, retry=1, verbose=0))[0]
 
             for sent, received in result:
                 mac = normalize_mac(received.hwsrc)
                 ip = received.psrc
 
                 # Skip our own MAC and gateway
-                if mac == self.local_mac:
+                if mac in {self.local_mac, self.gateway_mac} or ip == self.gateway_ip:
                     continue
 
                 # Look up vendor and hostname
                 vendor = lookup_vendor(mac)
-                hostname = get_hostname_from_ip(ip)
+                hostname = await asyncio.to_thread(get_hostname_from_ip, ip)
 
                 device = DiscoveredDevice(
                     mac_address=mac,
@@ -161,6 +160,7 @@ class DeviceManager:
 
         except Exception as e:
             logger.error(f"Network scan failed: {e}")
+            raise RuntimeError("Network scan failed") from e
 
         return discovered
 
@@ -169,7 +169,7 @@ class DeviceManager:
         Update database with discovered devices.
 
         Returns:
-            List of updated Device models
+            Full persisted snapshot, including offline devices
         """
         updated_devices = []
         discovered_macs: Set[str] = set()
@@ -225,7 +225,7 @@ class DeviceManager:
             for device in updated_devices:
                 await session.refresh(device)
 
-        return updated_devices
+        return await self.get_all_devices()
 
     async def get_all_devices(self) -> List[Device]:
         """Get all devices from database."""

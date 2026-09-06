@@ -92,6 +92,7 @@ class AccessLog(Base):
     __tablename__ = "access_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(64), nullable=True, unique=True)
     device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     domain = Column(String(255), nullable=False)

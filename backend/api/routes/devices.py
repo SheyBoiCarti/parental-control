@@ -247,7 +247,10 @@ async def trigger_scan(user: str = Depends(get_current_user)):
     """Trigger an immediate network scan."""
     state = get_app_state()
 
-    discovered = await state.device_manager.scan_network()
+    try:
+        discovered = await state.device_manager.scan_network()
+    except RuntimeError as error:
+        raise HTTPException(503, "Network scan failed; saved devices are unchanged") from error
     devices = await state.device_manager.update_devices_from_scan(discovered)
 
     device_list = [DeviceResponse(**d.to_dict()) for d in devices]

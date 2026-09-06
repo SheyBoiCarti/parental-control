@@ -46,9 +46,9 @@ export default function Devices() {
 
     const unsubUpdate = subscribe('device_update', (data: unknown) => {
       const updatedDevice = data as Device
-      setDevices((prev) =>
-        prev.map((d) => (d.mac_address === updatedDevice.mac_address ? updatedDevice : d))
-      )
+      setDevices((prev) => prev.some((d) => d.mac_address === updatedDevice.mac_address)
+        ? prev.map((d) => (d.mac_address === updatedDevice.mac_address ? updatedDevice : d))
+        : [...prev, updatedDevice])
     })
 
     return () => {

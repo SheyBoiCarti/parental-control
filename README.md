@@ -19,8 +19,8 @@ A Linux-based network management tool for parental control that provides device 
 
 - Linux (Ubuntu/Debian or Raspberry Pi OS recommended)
 - Root/sudo access
-- Python 3.11+
-- Node.js 18+ (for frontend development)
+- Python 3.11 or 3.12
+- Node.js 22 and npm (for building the dashboard)
 
 ### Hardware Recommendations
 
@@ -51,15 +51,24 @@ sudo apt install python3 python3-pip python3-venv libpcap-dev iptables iproute2
 cd backend
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
+cd ..
 ```
 
-3. Build frontend (optional):
+3. Build and install the dashboard:
 ```bash
 cd frontend
-npm install
+npm ci
 npm run build
+mkdir -p ../backend/static
+cp -r dist/. ../backend/static/
+cd ..
 ```
+
+The backend serves `backend/static` independently of the working directory. Set
+`STATIC_DIR` in the environment file to override it. For intentional API-only
+development, set `API_ONLY=true`; dashboard routes then return 404. Missing
+assets in dashboard mode return 503 with installation instructions.
 
 4. Configure the application:
 ```bash

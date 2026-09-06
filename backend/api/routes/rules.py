@@ -2,7 +2,8 @@
 
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from utils.domains import canonical_domain
 from sqlalchemy import select, delete
 
 from api.auth import get_current_user
@@ -28,6 +29,11 @@ class AppBlockRuleRequest(BaseModel):
 class DomainBlockRuleRequest(BaseModel):
     """Domain block rule request."""
     domain: str = Field(..., description="Domain pattern to block")
+
+    @field_validator("domain")
+    @classmethod
+    def normalize_domain(cls, value: str) -> str:
+        return canonical_domain(value)
 
 
 class RuleResponse(BaseModel):

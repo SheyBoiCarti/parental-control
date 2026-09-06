@@ -3,7 +3,7 @@
 import logging
 from typing import Set
 
-from utils.network_utils import run_command
+from utils.commands import CommandRunner, CommandError
 from utils.mac_utils import normalize_mac
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,8 @@ class DeviceBlocker:
     network access at the firewall level.
     """
 
-    def __init__(self, interface: str):
+    def __init__(self, interface: str, *, runner=None):
+        self._runner = runner if runner is not None else CommandRunner()
         self.interface = interface
         self._blocked_macs: Set[str] = set()
         self._chain_name = "PARENTAL_BLOCK"
@@ -28,39 +29,23 @@ class DeviceBlocker:
         if self._initialized:
             return
 
-        # Create custom chain
-        ret, _, _ = run_command(
-            ["iptables", "-N", self._chain_name],
-            check=False
+        # Probe before creating; an existing chain must never be flushed here.
+        result = await self._runner.run(
+            ["iptables", "-S", self._chain_name], check=False
         )
+        if result.returncode == 1:
+            await self._runner.run(["iptables", "-N", self._chain_name])
+        elif result.returncode:
+            raise CommandError("iptables", result)
 
-        # Flush chain if it already existed
-        run_command(
-            ["iptables", "-F", self._chain_name],
-            check=False
-        )
-
-        # Add jump to our chain from FORWARD (for traffic passing through)
-        ret, stdout, _ = run_command(
-            ["iptables", "-C", "FORWARD", "-j", self._chain_name],
-            check=False
-        )
-        if ret != 0:
-            run_command(
-                ["iptables", "-I", "FORWARD", "-j", self._chain_name],
-                check=False
+        for parent in ("FORWARD", "INPUT"):
+            result = await self._runner.run(
+                ["iptables", "-C", parent, "-j", self._chain_name], check=False
             )
-
-        # Also add to INPUT for traffic to this host
-        ret, _, _ = run_command(
-            ["iptables", "-C", "INPUT", "-j", self._chain_name],
-            check=False
-        )
-        if ret != 0:
-            run_command(
-                ["iptables", "-I", "INPUT", "-j", self._chain_name],
-                check=False
-            )
+            if result.returncode == 1:
+                await self._runner.run(["iptables", "-I", parent, "-j", self._chain_name])
+            elif result.returncode:
+                raise CommandError("iptables", result)
 
         self._initialized = True
         logger.info("Device blocker initialized")
@@ -86,7 +71,7 @@ class DeviceBlocker:
 
         try:
             # Block incoming traffic from this MAC
-            ret, _, err = run_command([
+            ret, _, err = await self._runner.run([
                 "iptables", "-A", self._chain_name,
                 "-m", "mac", "--mac-source", normalized_mac,
                 "-j", "DROP"
@@ -122,17 +107,13 @@ class DeviceBlocker:
 
         try:
             # Remove the DROP rule
-            ret, _, err = run_command([
+            ret, _, err = await self._runner.run([
                 "iptables", "-D", self._chain_name,
                 "-m", "mac", "--mac-source", normalized_mac,
                 "-j", "DROP"
-            ], check=False)
+            ])
 
-            # Even if command fails, remove from our tracking
             self._blocked_macs.discard(normalized_mac)
-
-            if ret != 0:
-                logger.warning(f"iptables rule removal may have failed: {err}")
 
             logger.info(f"Unblocked device: {normalized_mac}")
             return True
@@ -171,29 +152,23 @@ class DeviceBlocker:
         """Clean up iptables rules."""
         logger.info("Shutting down device blocker")
 
-        # Unblock all devices
+        failures = []
         for mac in list(self._blocked_macs):
-            await self.unblock_device(mac)
+            if not await self.unblock_device(mac):
+                failures.append(mac)
+        if failures:
+            raise RuntimeError("Failed to remove device blocks during shutdown")
 
-        # Remove chain references
-        run_command(
-            ["iptables", "-D", "FORWARD", "-j", self._chain_name],
-            check=False
-        )
-        run_command(
-            ["iptables", "-D", "INPUT", "-j", self._chain_name],
-            check=False
-        )
+        for parent in ("FORWARD", "INPUT"):
+            result = await self._runner.run(
+                ["iptables", "-C", parent, "-j", self._chain_name], check=False
+            )
+            if result.returncode == 0:
+                await self._runner.run(["iptables", "-D", parent, "-j", self._chain_name])
+            elif result.returncode != 1:
+                raise CommandError("iptables", result)
 
-        # Flush and delete chain
-        run_command(
-            ["iptables", "-F", self._chain_name],
-            check=False
-        )
-        run_command(
-            ["iptables", "-X", self._chain_name],
-            check=False
-        )
-
+        # Deletion fails if untracked rules remain; never flush them away.
+        await self._runner.run(["iptables", "-X", self._chain_name])
         self._initialized = False
         logger.info("Device blocker shutdown complete")
