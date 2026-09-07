@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Callable
 
 from sqlalchemy import select, update
@@ -15,6 +16,7 @@ from utils.mac_utils import normalize_mac
 
 
 COMPONENTS = ("interception", "blocking", "content", "bandwidth")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -161,13 +163,42 @@ class EnforcementReconciler:
 
         states = {name: ("inactive", None) for name in COMPONENTS}
         if not desired["interception"]:
-            self._arp.remove_target(mac)
+            cleanup_error = None
+            try:
+                if mac in self._arp.active_targets and not self._arp.remove_target(mac):
+                    raise RuntimeError("target removal returned false")
+            except Exception:
+                logger.exception("Interception removal reconciliation failed")
+                states["interception"] = ("error", "Interception removal failed")
+                cleanup_error = "Interception removal failed"
             if self._content is not None:
-                await self._content.remove_device(mac)
-            if self._blocker.is_blocked(mac):
-                if not await self._blocker.unblock_device(mac):
-                    states["blocking"] = ("error", "Block removal failed")
-            await self._traffic.remove_bandwidth_limit(mac)
+                try:
+                    content_removed = await self._content.remove_device(mac)
+                except Exception:
+                    logger.exception("Content removal reconciliation failed")
+                    content_removed = False
+                if not content_removed:
+                    states["content"] = ("error", "Content removal failed")
+                    cleanup_error = cleanup_error or "Content removal failed"
+            try:
+                blocked = self._blocker.is_blocked(mac)
+                block_removed = not blocked or await self._blocker.unblock_device(mac)
+            except Exception:
+                logger.exception("Block removal reconciliation failed")
+                block_removed = False
+            if not block_removed:
+                states["blocking"] = ("error", "Block removal failed")
+                cleanup_error = cleanup_error or "Block removal failed"
+            try:
+                bandwidth_removed = await self._traffic.remove_bandwidth_limit(mac)
+            except Exception:
+                logger.exception("Bandwidth removal reconciliation failed")
+                bandwidth_removed = False
+            if not bandwidth_removed:
+                states["bandwidth"] = ("error", "Bandwidth removal failed")
+                cleanup_error = cleanup_error or "Bandwidth removal failed"
+            if cleanup_error and states["interception"][0] != "error":
+                states["interception"] = ("error", cleanup_error)
             return await self._save(device.id, states)
 
         try:
@@ -213,25 +244,41 @@ class EnforcementReconciler:
                     if not applied:
                         enforcement_error = enforcement_error or "Content application failed"
             elif self._content is not None:
-                if not await self._content.remove_device(mac):
+                try:
+                    removed = await self._content.remove_device(mac)
+                except Exception:
+                    logger.exception("Content removal reconciliation failed")
+                    removed = False
+                if not removed:
                     states["content"] = ("error", "Content removal failed")
                     enforcement_error = enforcement_error or "Content removal failed"
 
             if desired["bandwidth"]:
                 value = bandwidth_rule.rule_value
-                applied = await self._traffic.set_bandwidth_limit(
-                    mac,
-                    value["download_kbps"],
-                    value["upload_kbps"],
-                    ip_address=device.ip_address,
-                )
+                try:
+                    applied = await self._traffic.set_bandwidth_limit(
+                        mac,
+                        value["download_kbps"],
+                        value["upload_kbps"],
+                        ip_address=device.ip_address,
+                    )
+                except Exception:
+                    logger.exception("Bandwidth reconciliation failed")
+                    applied = False
                 states["bandwidth"] = (
                     ("applied", None) if applied else ("error", "Bandwidth application failed")
                 )
                 if not applied:
                     enforcement_error = enforcement_error or "Bandwidth application failed"
             else:
-                await self._traffic.remove_bandwidth_limit(mac)
+                try:
+                    removed = await self._traffic.remove_bandwidth_limit(mac)
+                except Exception:
+                    logger.exception("Bandwidth removal reconciliation failed")
+                    removed = False
+                if not removed:
+                    states["bandwidth"] = ("error", "Bandwidth removal failed")
+                    enforcement_error = enforcement_error or "Bandwidth removal failed"
 
         if enforcement_error:
             states["interception"] = ("error", enforcement_error)

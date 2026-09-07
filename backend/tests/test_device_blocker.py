@@ -59,6 +59,75 @@ async def test_initialization_preserves_existing_chain_and_checks_hook_creation(
 
 
 @pytest.mark.asyncio
+async def test_foreign_rule_in_block_chain_is_preserved_and_startup_refuses():
+    class ForeignRunner:
+        def __init__(self):
+            self.calls = []
+
+        async def run(self, argv, **kwargs):
+            self.calls.append(argv)
+            if argv == ["iptables", "-S", "PARENTAL_BLOCK"]:
+                return CommandResult(
+                    0,
+                    "-N PARENTAL_BLOCK\n-A PARENTAL_BLOCK -j ACCEPT\n",
+                    "",
+                )
+            return CommandResult(0, "", "")
+
+    runner = ForeignRunner()
+    blocker = DeviceBlocker("eth0", runner=runner)
+
+    with pytest.raises(RuntimeError, match="foreign rules"):
+        await blocker.initialize()
+
+    assert ["iptables", "-F", "PARENTAL_BLOCK"] not in runner.calls
+    assert ["iptables", "-X", "PARENTAL_BLOCK"] not in runner.calls
+
+
+@pytest.mark.asyncio
+async def test_restart_reclaims_exact_owned_blocks_and_uses_owned_forward_hook():
+    stale = (
+        "-N PARENTAL_BLOCK\n"
+        "-A PARENTAL_BLOCK -m mac --mac-source AA:BB:CC:DD:EE:21 "
+        "-m comment --comment parental-control:block:aabbccddee21 -j DROP\n"
+    )
+
+    class Runner:
+        def __init__(self):
+            self.calls = []
+
+        async def run(self, argv, **kwargs):
+            self.calls.append(argv)
+            if argv == ["iptables", "-S", "PARENTAL_BLOCK"]:
+                return CommandResult(0, stale, "")
+            if argv[:4] == ["iptables", "-C", "FORWARD", "-m"]:
+                return CommandResult(1, "", "")
+            return CommandResult(0, "", "")
+
+    runner = Runner()
+    blocker = DeviceBlocker("eth0", runner=runner)
+    await blocker.initialize()
+    assert await blocker.block_device("AA:BB:CC:DD:EE:22")
+
+    assert [
+        "iptables", "-D", "PARENTAL_BLOCK", "-m", "mac", "--mac-source",
+        "AA:BB:CC:DD:EE:21", "-m", "comment", "--comment",
+        "parental-control:block:aabbccddee21", "-j", "DROP",
+    ] in runner.calls
+    assert any(
+        call[:4] == ["iptables", "-I", "FORWARD", "1"]
+        and "parental-control:block-hook" in call
+        for call in runner.calls
+    )
+    assert all("INPUT" not in call for call in runner.calls)
+    assert any(
+        call[:3] == ["iptables", "-A", "PARENTAL_BLOCK"]
+        and "parental-control:block:aabbccddee22" in call
+        for call in runner.calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_successful_block_and_removal_update_tracking():
     runner = ScriptedRunner([0, 0, 0, 0, 0])
     blocker = DeviceBlocker("eth0", runner=runner)

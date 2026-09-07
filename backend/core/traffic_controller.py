@@ -206,7 +206,7 @@ class TrafficController:
         normalized_mac = normalize_mac(mac)
         limit = self._limits.get(normalized_mac)
         if limit is None:
-            return False
+            return True
         try:
             for identifier in (limit.class_id, limit.class_id + 1):
                 await self._run_tc([
