@@ -1,6 +1,8 @@
 """Device discovery and management using ARP scanning."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import ipaddress
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
@@ -17,6 +19,7 @@ from utils.network_utils import (
     get_default_gateway,
     get_network_subnet,
     get_hostname_from_ip,
+    get_interface_ip,
     get_interface_mac,
 )
 
@@ -43,12 +46,23 @@ class DeviceManager:
         interface: str,
         gateway_ip: Optional[str] = None,
         network_subnet: Optional[str] = None,
+        reverse_dns_concurrency: int = 8,
+        reverse_dns_timeout: float = 1.0,
     ):
         self.interface = interface
         self.gateway_ip = gateway_ip
         self.gateway_mac: Optional[str] = None
         self.local_mac: Optional[str] = None
+        self.local_ip: Optional[str] = None
         self.subnet = network_subnet
+        if reverse_dns_concurrency < 1 or reverse_dns_timeout <= 0:
+            raise ValueError("Reverse DNS bounds must be positive")
+        self._reverse_dns_concurrency = reverse_dns_concurrency
+        self._reverse_dns_timeout = reverse_dns_timeout
+        self._dns_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=self._reverse_dns_concurrency,
+            thread_name_prefix="parental-reverse-dns",
+        )
         self._scan_task: Optional[asyncio.Task] = None
         self._running = False
         self._online_check_callbacks: List[callable] = []
@@ -57,12 +71,23 @@ class DeviceManager:
         """Initialize device manager and detect network configuration."""
         logger.info(f"Initializing DeviceManager on interface {self.interface}")
 
-        # Get local MAC
-        self.local_mac = get_interface_mac(self.interface)
+        detected_subnet = self.subnet
+        probes = [
+            asyncio.to_thread(get_interface_mac, self.interface),
+            asyncio.to_thread(get_interface_ip, self.interface),
+            asyncio.to_thread(get_default_gateway),
+        ]
+        if detected_subnet is None:
+            probes.append(asyncio.to_thread(get_network_subnet, self.interface))
+        results = await asyncio.gather(*probes)
+        self.local_mac = results[0]
+        self.local_ip = results[1]
+        gateway_info = results[2]
+        if detected_subnet is None:
+            detected_subnet = results[3]
         logger.info(f"Local MAC: {self.local_mac}")
 
         # Get gateway
-        gateway_info = get_default_gateway()
         if self.gateway_ip:
             if gateway_info and gateway_info[1] != self.interface:
                 raise RuntimeError(
@@ -85,8 +110,14 @@ class DeviceManager:
             logger.info(f"Gateway MAC: {self.gateway_mac}")
 
         # Get subnet
+        self.subnet = detected_subnet
         if self.subnet is None:
-            self.subnet = get_network_subnet(self.interface)
+            raise RuntimeError(f"Cannot determine network subnet for {self.interface}")
+        network = ipaddress.IPv4Network(self.subnet, strict=True)
+        if self.local_ip and ipaddress.IPv4Address(self.local_ip) not in network:
+            raise RuntimeError("Appliance address is outside the selected subnet")
+        if self.gateway_ip and ipaddress.IPv4Address(self.gateway_ip) not in network:
+            raise RuntimeError("Gateway address is outside the selected subnet")
         logger.info(f"Network subnet: {self.subnet}")
 
         # Initialize database
@@ -135,6 +166,7 @@ class DeviceManager:
             # Send and receive
             result = (await asyncio.to_thread(srp, packet, iface=self.interface, timeout=5, retry=1, verbose=0))[0]
 
+            candidates = []
             for sent, received in result:
                 mac = normalize_mac(received.hwsrc)
                 ip = received.psrc
@@ -143,17 +175,36 @@ class DeviceManager:
                 if mac in {self.local_mac, self.gateway_mac} or ip == self.gateway_ip:
                     continue
 
-                # Look up vendor and hostname
-                vendor = lookup_vendor(mac)
-                hostname = await asyncio.to_thread(get_hostname_from_ip, ip)
+                candidates.append((mac, ip, lookup_vendor(mac)))
 
-                device = DiscoveredDevice(
+            loop = asyncio.get_running_loop()
+            if self._dns_executor is None:
+                self._dns_executor = ThreadPoolExecutor(
+                    max_workers=self._reverse_dns_concurrency,
+                    thread_name_prefix="parental-reverse-dns",
+                )
+
+            async def hostname(ip: str) -> Optional[str]:
+                try:
+                    return await asyncio.wait_for(
+                        loop.run_in_executor(
+                            self._dns_executor,
+                            get_hostname_from_ip,
+                            ip,
+                        ),
+                        timeout=self._reverse_dns_timeout,
+                    )
+                except (TimeoutError, RuntimeError):
+                    return None
+
+            hostnames = await asyncio.gather(*(hostname(ip) for _, ip, _ in candidates))
+            for (mac, ip, vendor), resolved_name in zip(candidates, hostnames):
+                discovered.append(DiscoveredDevice(
                     mac_address=mac,
                     ip_address=ip,
-                    hostname=hostname,
-                    vendor=vendor
-                )
-                discovered.append(device)
+                    hostname=resolved_name,
+                    vendor=vendor,
+                ))
                 logger.debug(f"Discovered: {ip} ({mac}) - {vendor or 'Unknown vendor'}")
 
             logger.info(f"Scan complete: {len(discovered)} devices found")
@@ -314,6 +365,9 @@ class DeviceManager:
             except asyncio.CancelledError:
                 pass
             self._scan_task = None
+        if self._dns_executor is not None:
+            self._dns_executor.shutdown(wait=False, cancel_futures=True)
+            self._dns_executor = None
         logger.info("Stopped periodic scanning")
 
     def add_online_callback(self, callback: callable):

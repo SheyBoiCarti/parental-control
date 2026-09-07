@@ -58,6 +58,7 @@ def build_app_state(
     *,
     gateway_mac: str | None,
     local_mac: str | None,
+    local_ip: str | None = None,
 ) -> AppState:
     """Construct components from one config snapshot without starting them."""
     device_manager = component_types["DeviceManager"](
@@ -72,6 +73,8 @@ def build_app_state(
             gateway_ip=config.gateway_ip,
             gateway_mac=gateway_mac,
             local_mac=local_mac,
+            local_ip=local_ip,
+            network_subnet=config.network_subnet,
         ),
         packet_analyzer=component_types["PacketAnalyzer"](config.network_interface),
         traffic_controller=component_types["TrafficController"](config.network_interface),
@@ -135,6 +138,7 @@ class ParentalControlApp:
             types,
             gateway_mac=manager.gateway_mac,
             local_mac=manager.local_mac,
+            local_ip=manager.local_ip,
         )
         self.state.device_manager = manager
         await self.state.content_blocker.initialize()

@@ -220,6 +220,7 @@ def test_component_construction_receives_network_overrides():
         },
         gateway_mac="AA:BB:CC:DD:EE:01",
         local_mac="AA:BB:CC:DD:EE:02",
+        local_ip="192.0.2.2",
     )
     assert state.device_manager is not None
     assert calls["device"] == (
@@ -230,6 +231,14 @@ def test_component_construction_receives_network_overrides():
     assert calls["packet"] == ("lan7",)
     assert calls["traffic"] == ("lan7",)
     assert calls["blocker"] == ("lan7",)
+    assert calls["arp"] == (
+        ("gateway_ip", "192.0.2.1"),
+        ("gateway_mac", "AA:BB:CC:DD:EE:01"),
+        ("interface", "lan7"),
+        ("local_ip", "192.0.2.2"),
+        ("local_mac", "AA:BB:CC:DD:EE:02"),
+        ("network_subnet", "192.0.2.0/24"),
+    )
 
 
 def test_cli_host_and_port_reach_runtime_config(monkeypatch: pytest.MonkeyPatch):
