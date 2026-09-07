@@ -18,6 +18,12 @@ async def test_failed_limit_removal_preserves_tracking():
 
 
 @pytest.mark.asyncio
+async def test_removing_an_absent_limit_is_idempotent_success():
+    controller = TrafficController("eth0", runner=FailedRunner())
+    assert await controller.remove_bandwidth_limit("AA:BB:CC:DD:EE:02") is True
+
+
+@pytest.mark.asyncio
 async def test_tc_failure_is_propagated_to_caller():
     controller = TrafficController("eth0", runner=FailedRunner())
     with pytest.raises(CommandError):

@@ -149,6 +149,99 @@ async def test_bandwidth_failure_is_persisted_and_returned_as_error(reconciliati
 
 
 @pytest.mark.asyncio
+async def test_unexpected_bandwidth_exception_is_persisted_as_sanitized_error(
+    reconciliation_db,
+):
+    class ExplodingTraffic(FakeTraffic):
+        async def set_bandwidth_limit(self, *args, **kwargs):
+            raise RuntimeError("secret command detail")
+
+    async with reconciliation_db() as session:
+        device = Device(
+            mac_address="AA:BB:CC:DD:EE:12",
+            ip_address="192.0.2.12",
+        )
+        session.add(device)
+        await session.flush()
+        session.add(DeviceRule(
+            device_id=device.id,
+            rule_type="bandwidth",
+            rule_value={"download_kbps": 2000, "upload_kbps": 500},
+            canonical_value="bandwidth",
+            is_active=True,
+        ))
+
+    reconciler = EnforcementReconciler(
+        reconciliation_db,
+        FakeARP(),
+        FakeBlocker(),
+        ExplodingTraffic(),
+    )
+
+    result = await reconciler.reconcile("AA:BB:CC:DD:EE:12")
+
+    assert result.components["bandwidth"].state == "error"
+    assert result.components["bandwidth"].last_error == "Bandwidth application failed"
+    assert "secret" not in str(result.to_dict())
+
+
+@pytest.mark.asyncio
+async def test_unexpected_bandwidth_removal_exception_is_persisted(
+    reconciliation_db,
+):
+    class ExplodingTraffic(FakeTraffic):
+        async def remove_bandwidth_limit(self, mac):
+            raise RuntimeError("secret removal detail")
+
+    async with reconciliation_db() as session:
+        session.add(Device(
+            mac_address="AA:BB:CC:DD:EE:13",
+            ip_address="192.0.2.13",
+            is_monitored=True,
+        ))
+
+    reconciler = EnforcementReconciler(
+        reconciliation_db,
+        FakeARP(),
+        FakeBlocker(),
+        ExplodingTraffic(),
+    )
+
+    result = await reconciler.reconcile("AA:BB:CC:DD:EE:13")
+
+    assert result.components["bandwidth"].state == "error"
+    assert result.components["bandwidth"].last_error == "Bandwidth removal failed"
+    assert result.components["interception"].state == "error"
+
+
+@pytest.mark.asyncio
+async def test_failed_cleanup_without_remaining_intent_is_not_marked_inactive(
+    reconciliation_db,
+):
+    class FailedRemovalTraffic(FakeTraffic):
+        async def remove_bandwidth_limit(self, mac):
+            return False
+
+    async with reconciliation_db() as session:
+        session.add(Device(
+            mac_address="AA:BB:CC:DD:EE:14",
+            ip_address="192.0.2.14",
+        ))
+
+    reconciler = EnforcementReconciler(
+        reconciliation_db,
+        FakeARP(),
+        FakeBlocker(),
+        FailedRemovalTraffic(),
+    )
+
+    result = await reconciler.reconcile("AA:BB:CC:DD:EE:14")
+
+    assert result.components["bandwidth"].state == "error"
+    assert result.components["interception"].state == "error"
+
+
+@pytest.mark.asyncio
 async def test_real_arp_public_interface_can_apply_interception(reconciliation_db):
     class PublicARP:
         def __init__(self):
