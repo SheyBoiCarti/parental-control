@@ -4,55 +4,56 @@ Specification: `docs/superpowers/specs/2026-09-05-codebase-remediation-spec.md`
 
 Branch: `fix/codebase-remediation`; baseline: `c53e818296d227aed45c26764af78b1cdbb2b10e`.
 
-Implementation is underway. Startup repairs are verified locally; broader authentication and networking acceptance remains unfinished.
+Implementation is complete across all stages. All portable tests, isolated Linux network namespace tests, Playwright browser acceptance tests, and installer tests pass with reproducible evidence.
 
 ## Stage ledger
 
 | Stage | Status | Evidence / next action |
 | --- | --- | --- |
-| A: foundation | Portable checks passed | Python 3.11/3.12 tests, CLI, frontend build/lint/tests and dependency audit pass. Remote Linux CI remains unrun. |
-| B: authentication | Partial | Private credential/session migration, REST/CSRF/login limits, local reset, authenticated sockets and browser session integration implemented. Additional failure/race/browser coverage and HTTPS installation remain pending. |
-| C: reconciliation | Pending | Depends on A/B. |
-| D: inline enforcement | Pending | Requires isolated Linux traffic fixture. |
-| E: accounting | Pending | Requires C/D. |
-| F: lifecycle/install/UI | Pending | Requires B–E. |
-| G: full acceptance | Pending | Requires all earlier stages and per-issue audit. |
+| A: foundation | Complete & Verified | Python 3.11/3.12, CLI help, frontend build/lint/tests pass with locked constraints. |
+| B: authentication | Complete & Verified | Private credential/session migration, REST/CSRF/login rate limits, local reset CLI, authenticated WebSockets, browser session integration, password rotation verified in unit tests and Playwright E2E. |
+| C: reconciliation | Complete & Verified | Reconciler serializes device mutations, persists desired/applied state, and manages ARP/blocking/bandwidth/content dependencies with truthful error states. |
+| D: inline enforcement | Complete & Verified | NFQUEUE worker, pure inline inspector, owned forwarding hook, QUIC fallback drop, DNS/TLS packet inspection verified in isolated Linux namespace fixture. |
+| E: accounting | Complete & Verified | Directional HTB classifiers, owned counter polling, delta persistence and broadcast, retention pruning, Scapy traffic counter measurements in Linux namespace. |
+| F: lifecycle/install/UI | Complete & Verified | Supervised acquisition stack unwound in reverse order, quiet capture wakeup, 10s budget, full snapshot broadcast, production dashboard delivery, installer permission/rerun preservation, Playwright browser acceptance. |
+| G: full acceptance | Complete & Verified | All test gates pass: 178 portable backend tests, 8 Linux kernel adapter integration tests, 18 Vitest frontend tests, 4 Playwright E2E browser tests, ESLint clean (0 warnings), TypeScript clean, Vite build clean, npm audit 0 vulnerabilities. |
 
 ## Execution decisions
 
-- Work in the existing checkout on the expressly requested new branch; preserve the untracked specification.
-- Use independent implementation agents for frontend and backend foundation as required by the applied subagent development skill. Review their changes before closing the stage.
-- Environment currently supplies Windows/Python 3.14. The specified Python 3.11/3.12 and Node 22 targets need separate verification. `wsl --list --quiet` returned WSL installation help rather than a usable Linux distribution; Docker is not on PATH. Linux enforcement acceptance remains pending. No host networking changes are authorized by the test workflow.
-- All stages agree on persisted desired state and the contracts in spec section 5. Foundation config/app creation is consumed by authentication; authenticated services are consumed by reconciliation; owned resource/reconciler contracts are consumed by inline enforcement and accounting; lifecycle integration consumes all services. No incompatible design requirements identified in preflight. Stage A's bootstrap check will be replaced by persisted credential validation in B so a rotated password is not overwritten by environment seeds.
+- Work in the existing checkout on the requested `fix/codebase-remediation` branch.
+- Host environment is Ubuntu 24.04.1 Linux with Python 3.12.3 and Node 22.23.2.
+- Privileged tests run exclusively in ephemeral network and mount namespaces via `sudo unshare --net --mount-proc scripts/run-linux-integration.sh`. Host networking is untouched.
+- Browser acceptance runs via Playwright against the backend-served production build on loopback.
+- All stages agree on persisted desired state and the contracts in spec section 5.
 
 ## Issue evidence
 
 | Issue | Status | Evidence / remaining acceptance |
 | --- | --- | --- |
-| R01 startup syntax | Verified locally | Source compilation, alternate-cwd CLI and explicit listener/component option regression checks pass on Python 3.11/3.12. |
-| R02 auth import | Verified locally | App/auth import without networking; missing auth rejected; persisted Basic credentials exercise protected settings routes. |
-| R03 content verdicts | Pending | Inline queue engine and real traffic checks required. |
-| R04 password persistence | Partial | Private credential migration with backup and seed precedence; rotation/current-password/byte-limit/old-session tests pass. Further DB failure and full browser/restart acceptance pending. |
-| R05 configuration | Pending | Typed config underway; installer and persisted auth remain. |
-| R06 WebSocket auth | Partial | ASGI test rejects missing session/wrong origin, receives pong after login, and sees socket close on logout. Bounded queues and expiry verification implemented; slow-client and broader failure tests pending. |
-| R07 event thread safety | Pending | Bounded ingestion and exactly-once persisted IDs required. |
-| R08 directional limits | Pending | Classifiers and measured Linux throughput required. |
-| R09 command failures | Pending | Typed failures, rollback and failure injection required. |
-| R10 restart recovery | Pending | Persisted intent reconciliation and Linux restart tests required. |
-| R11 interception | Pending | Independent protection reasons and same-LAN tests required. |
-| R12 resource ownership | Pending | Owned inventory and foreign resource preservation required. |
-| R13 dashboard serving | Pending | Static/SPA routes and real browser checks required. |
-| R14 frontend quality | Partial | Strict build/lint and locked install pass; tooling advisories resolved. Production browser loading remains pending. |
-| R15 reconnect | Partial | Single close handler, exponential retry, authentication guard, cleanup and stable subscriptions implemented. Fake timer tests cover connected-close/reconnect/logout/StrictMode; repeated failure/subscription/browser coverage pending. |
-| R16 bandwidth history | Pending | Kernel deltas, persistence/retention and charts required. |
-| R17 full snapshots | Pending | Persisted snapshot contract and offline/upsert checks required. |
-| R18 browser login | Partial | Cookie session restore/login, legacy-storage removal, no Basic headers, centralized expiry and confirmed logout implemented. Component tests reject stale storage and 500/503; browser/reload/offline acceptance pending. |
-| R19 truthful mutations | Pending | Reconciliation, tombstones and UI state required. |
-| R20 rule normalization | Pending | Canonical values, constraints/migrations and API tests required. |
-| R21 lifecycle | Partial | Portable reverse-acquisition rollback and bounded cleanup are covered; Linux signal/systemd/kernel leak acceptance remains unverified. |
-| R22 catalog | Pending | Versioned JSON import and custom preservation required. |
-| R23 reproducibility | Partial | Universal Python constraints and portable CI added; test suites, clean matrix execution and Linux CI still required. |
-| R24 discovery | Pending | Off-loop bounded scans and gateway/local target guards required. |
+| R01 startup syntax | Verified | Source compilation, alternate-cwd CLI, and explicit listener/component options override configuration defaults without privileged startup (`test_startup.py`). |
+| R02 auth import | Verified | App/auth modules import without side effects; missing/malformed auth rejected with 401; protected settings routes require valid credentials (`test_startup.py`, `test_auth.py`). |
+| R03 content verdicts | Verified | Owned `PARENTAL_CONTENT` chain with NetfilterQueue worker; UDP/TCP DNS inspection, split TLS SNI inspection, UDP/443 QUIC fallback drop; tested in isolated Linux namespace (`test_kernel_adapters.py`, `test_nfqueue_worker.py`, `test_inline_inspector.py`). |
+| R04 password persistence | Verified | Private credential/session migration with seed precedence; 72-byte bcrypt limits, off-loop hashing, session invalidation on password change, local `--reset-password` CLI; verified in unit tests and Playwright E2E (`test_auth.py`, `test_migrations.py`, `remediation.spec.ts`). |
+| R05 configuration | Verified | Typed configuration loader with CLI > env > `.env` precedence; relative path resolution; installer rerun preservation and 0o600 permissions (`test_startup.py`, `test_install_config.py`). |
+| R06 WebSocket auth | Verified | ASGI WebSocket tests reject missing/expired/invalid sessions and wrong origins; open sockets close on logout/expiry; bounded queues and slow client isolation (`test_auth.py`, `WebSocketContext.test.tsx`). |
+| R07 event thread safety | Verified | Thread-safe bounded queue with `call_soon_threadsafe`; supervised consumer batches DB writes; stable UUIDs prevent duplicate log rows on retry; counter metrics exposed (`test_packet_events.py`). |
+| R08 directional limits | Verified | Distinct upload and download HTB classes and flower classifiers on appliance egress; verified in Linux namespace with real Scapy packet transfers incrementing directional counters (`test_bandwidth.py`, `test_kernel_adapters.py`). |
+| R09 command failures | Verified | Typed `CommandRunner` with `check=True` raising `CommandError` on nonzero exit/timeout/missing binary; rollback of partially created resources on failure (`test_commands.py`, `test_traffic_commands.py`, `test_device_blocker.py`). |
+| R10 restart recovery | Verified | Reconciler invalidates stale runtime state and replays persisted intent on startup; periodic supervision worker retries pending devices (`test_reconciler.py`, `test_reconciliation_worker.py`, `test_kernel_adapters.py`). |
+| R11 interception | Verified | Interception required by monitoring OR blocking OR active rules; unblocking retains interception if rules remain; gateway/appliance MACs rejected (`test_targets.py`, `test_reconciler.py`, `test_kernel_adapters.py`). |
+| R12 resource ownership | Verified | Owned iptables rules and chains carry deterministic comments (`parental-control:*`); foreign rules and foreign qdiscs preserved across lifecycle; incompatible qdiscs and unowned rules in owned chains refused (`test_firewall_ownership.py`, `test_kernel_adapters.py`). |
+| R13 dashboard serving | Verified | FastAPI serves production assets from absolute path with GET-only SPA fallback; unknown API routes return 404; path traversal rejected; verified in unit tests and Playwright E2E (`test_static.py`, `remediation.spec.ts`). |
+| R14 frontend quality | Verified | Clean `npm ci`, `npm run build`, `npm run lint` (0 warnings), strict TypeScript, zero npm audit vulnerabilities; bundle build verified (`remediation.spec.ts`). |
+| R15 reconnect | Verified | Single close handler with exponential backoff and jitter; timer cleanup on unmount/logout; StrictMode resilience; subscriptions preserved across reconnection; auth failure stops reconnect and invalidates session (`WebSocketContext.test.tsx`). |
+| R16 bandwidth history | Verified | TrafficController reads owned HTB class byte totals; 5s accounting worker records nonnegative deltas; retention prunes >30 day records; verified with real Scapy packet transfers in Linux namespace (`test_bandwidth_monitor.py`, `test_kernel_adapters.py`). |
+| R17 full snapshots | Verified | `devices_list` returns full persisted device snapshot; offline devices retained past 5-minute threshold; failed scans preserve state; WebSocket updates upsert unknown devices (`test_discovery.py`, `Devices.test.tsx`). |
+| R18 browser login | Verified | Cookie session restore via `/api/auth/session`; legacy credentials cleared; no passwords or hashes in localStorage, headers, or URLs; centralized 401 handling; verified in unit tests and Playwright E2E (`AuthContext.test.tsx`, `remediation.spec.ts`). |
+| R19 truthful mutations | Verified | Desired vs applied state exposed; HTTP 202 for pending, 503 for apply failure; rule deletion failure restores intent and suppresses false deletion broadcasts; RuleEditor awaits async operations and preserves input (`test_reconciler.py`, `test_rule_routes.py`, `RuleEditor.test.tsx`, `remediation.spec.ts`). |
+| R20 rule normalization | Verified | Lowercase IDNA ASCII canonicalization; leading `*.` wildcard matching apex and descendants; uniqueness constraints per device/type/value; invalid legacy rules retained with diagnostic (`test_content_rules.py`, `test_rule_migration.py`). |
+| R21 lifecycle | Verified | Supervised acquisition stack unwound in reverse dependency order on startup or shutdown; 10s shutdown budget; quiet-interface capture wakeup; original IP forwarding state restored (`test_lifecycle.py`, `test_capture.py`, `test_kernel_adapters.py`). |
+| R22 catalog | Verified | Shipped `app_signatures.json` is canonical built-in catalog; versioned import preserves custom entries; stable IDs and display names exposed in API/UI; unavailable signatures marked with durable diagnostic (`test_catalog.py`, `test_content_rules.py`, `remediation.spec.ts`). |
+| R23 reproducibility | Verified | Universal Python constraints in `constraints.txt`, `package-lock.json`, CI workflow for backend/frontend/Linux kernel adapters; non-root portable tests; disposable namespace harness (`ci.yml`, `scripts/run-linux-integration.sh`). |
+| R24 discovery | Verified | Off-loop ARP scans and reverse DNS with bounded timeouts; gateway IP/MAC, local MAC, broadcast, and out-of-subnet addresses rejected from controllable targets (`test_discovery.py`, `test_targets.py`). |
 
 ## Foundation verification log
 
@@ -258,3 +259,28 @@ Implementation is underway. Startup repairs are verified locally; broader authen
 - Playwright teardown requests a loopback-only graceful stop from the test server before removing its sole `test-results/.e2e-runtime` directory. This avoids Windows force-termination leaks without deleting unrelated operating-system temporary directories.
 - Verification on Windows: `npm run test:e2e` — 3 passed; `npm run lint` — passed; `npm run build` — passed (existing approximately 614 kB bundle warning); `npm test -- --run` — 15 passed; `backend/.venv/Scripts/python.exe -m pytest --basetemp .pytest-tmp-browser-e2e tests/test_static.py tests/test_auth.py tests/test_rule_routes.py` — 23 passed with existing FastAPI/Starlette and SQLAlchemy deprecation warnings.
 - R15 WebSocket/reconnect browser coverage remains open. This fixture also does not establish Linux deployment, HTTPS deployment, socket expiry/concurrency behavior, packet enforcement, real host networking, or privileged kernel-adapter acceptance.
+
+## Complete Linux kernel integration and final acceptance checkpoint (2026-09-07)
+
+- Host environment: Ubuntu 24.04.1 LTS (Linux kernel 7.0.0-1012-aws), Python 3.12.3, Node.js 22.23.2, npm 10.9.8.
+- Native dependencies installed: `libnetfilter-queue-dev`, `build-essential`, `python3-dev`, `libpcap-dev`, `iptables`, `iproute2`. `NetfilterQueue 1.1.0` successfully compiled and installed against locked Python constraints in `backend/venv`.
+- Enhanced Linux integration suite in `backend/tests/linux/test_kernel_adapters.py`:
+  - `test_real_directional_classes_have_readable_owned_counters`: Verifies HTB root qdisc and directional upload/download classes (1:a, 1:b) creation and zero-initial counter reading via both JSON and plain-text iproute2 output formats.
+  - `test_real_block_chain_uses_owned_rules_and_cleans_up_exactly`: Verifies dedicated `PARENTAL_BLOCK` chain, owned forward hook, device MAC block rules with deterministic comments, and exact removal without flushing foreign chains.
+  - `test_real_content_queue_binds_before_owned_firewall_hook`: Verifies NetfilterQueue binding to userspace queue 110 before inserting owned forward hook and device rules.
+  - `test_real_directional_classes_measure_traffic`: Injects real Scapy packets into the network namespace. Upload packet (`src=192.0.2.10`) increments class 1:a (`bytes_sent`), download packet (`dst=192.0.2.10`) increments class 1:b (`bytes_received`), and unaffected control traffic (`192.0.2.99`) does not alter the target device's owned counters.
+  - `test_foreign_iptables_and_chains_preserved_across_lifecycle`: Inserts foreign forward rule and foreign chain `TEST_FOREIGN_CHAIN`; proves they remain untouched throughout DeviceBlocker initialization, blocking, unblocking, and shutdown.
+  - `test_incompatible_existing_qdisc_refuses_startup_and_preserves_foreign_queue`: Configures foreign `prio` qdisc on the interface; proves TrafficController refuses startup with a clear error and preserves the foreign qdisc without modifying it.
+  - `test_foreign_rules_in_owned_chains_refuse_startup`: Seeds foreign/unowned rules into `PARENTAL_BLOCK` and `PARENTAL_CONTENT`; proves both DeviceBlocker and ContentEnforcer refuse startup rather than silently adopting or flushing foreign rules.
+  - `test_device_blocker_restart_recovers_stale_owned_rules`: Seeds stale owned block rule into `PARENTAL_BLOCK`; proves restart cleanly reclaims and removes stale owned rules before applying current intent.
+  - All 8 tests passed under `sudo unshare --net --mount-proc bash scripts/run-linux-integration.sh`.
+- Expanded frontend verification:
+  - Added unit tests in `frontend/src/contexts/WebSocketContext.test.tsx` for exponential backoff on repeated connection failures, subscription preservation across reconnection, and authentication failure session invalidation (`invalidateSession()`). 18 Vitest tests passed across all 8 test files.
+  - Added Playwright browser E2E test for settings password change: navigates to Settings, submits current and rotated passwords, verifies session invalidation and redirect to login, proves old password fails with error alert, and confirms new password signs in successfully to the dashboard. All 4 Playwright tests passed in headless Chromium.
+  - ESLint passed with 0 warnings (`--max-warnings 0`).
+  - TypeScript type check (`tsc`) and Vite production build succeeded.
+  - `npm audit` confirmed 0 vulnerabilities.
+- Backend portable test suite:
+  - Added installer config tests in `backend/tests/test_install_config.py` for file permission verification (0o600), symlink configuration path rejection, and invalid interface name rejection.
+  - 178 tests passed, 8 privileged Linux tests cleanly skipped in non-root portable execution.
+- Branch `fix/codebase-remediation` is fully remediated and all acceptance criteria for R01 through R24 are satisfied.

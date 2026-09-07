@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import json
+import re
 import ipaddress
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -237,24 +238,37 @@ class TrafficController:
         result = await self._runner.run([
             "tc", "-j", "-s", "class", "show", "dev", self.interface,
         ])
+        by_handle: dict[str, int] = {}
+        parsed_ok = False
         try:
             inventory = json.loads(result.stdout)
-            if not isinstance(inventory, list):
-                raise ValueError
-            by_handle = {}
-            for item in inventory:
-                if not isinstance(item, dict):
-                    raise ValueError
-                handle = item.get("handle") or item.get("classid")
-                stats = item.get("stats")
-                if not isinstance(handle, str) or not isinstance(stats, dict):
-                    continue
-                byte_count = stats.get("bytes")
-                if type(byte_count) is not int or byte_count < 0:
-                    raise ValueError
-                by_handle[handle.lower()] = byte_count
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise RuntimeError("Cannot read traffic accounting counters") from error
+            if isinstance(inventory, list):
+                for item in inventory:
+                    if not isinstance(item, dict):
+                        continue
+                    handle = item.get("handle") or item.get("classid")
+                    stats = item.get("stats")
+                    if not isinstance(handle, str) or not isinstance(stats, dict):
+                        continue
+                    byte_count = stats.get("bytes")
+                    if type(byte_count) is int and byte_count >= 0:
+                        by_handle[handle.lower()] = byte_count
+                parsed_ok = True
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+        if not parsed_ok:
+            for match in re.finditer(
+                r"class\s+\w+\s+([0-9a-fA-F:]+).*?\n\s*Sent\s+(\d+)\s+bytes",
+                result.stdout,
+                re.IGNORECASE,
+            ):
+                handle = match.group(1).lower()
+                by_handle[handle] = int(match.group(2))
+                parsed_ok = True
+
+        if not parsed_ok and self._limits:
+            raise RuntimeError("Cannot read traffic accounting counters")
 
         counters: Dict[str, Dict[str, int | str]] = {}
         for mac, limit in self._limits.items():

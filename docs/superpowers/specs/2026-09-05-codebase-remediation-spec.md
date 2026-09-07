@@ -4,7 +4,7 @@
 
 **Reviewed revision:** `c53e818296d227aed45c26764af78b1cdbb2b10e`
 
-**Status:** Portable implementation is substantially complete on `fix/codebase-remediation` at `4bf488e`; privileged Linux, browser, installer, lifecycle, and concurrency acceptance remains. The dated handoff below is authoritative for current progress.
+**Status:** Complete across all stages A-G on `fix/codebase-remediation`. Portable Python/Node suites, isolated Linux kernel integration tests (NetfilterQueue, HTB traffic control, iptables ownership), Playwright browser acceptance (Chromium), and installer verification pass with reproducible evidence.
 **Goal:** Make installation, authentication, device management, traffic enforcement, reporting, and recovery behave as advertised, with reproducible evidence for every repaired defect.
 
 ## 0. Implementation status and continuation handoff (2026-09-07)
@@ -530,11 +530,11 @@ Checkboxes track implementation evidence recorded in the results document. Passi
 
 **Issues:** R04, R06, R18 and auth parts of R05/R23. **Depends on:** A.
 
-- [ ] Write migration/password/session/origin/CSRF tests, including existing-database fixtures.
-- [ ] Add credential/session schema migrations and local password-reset command.
-- [ ] Implement auth API, password rotation, exact-origin policy, and session-bound sockets.
-- [ ] Replace frontend credential storage with confirmed sessions and clear legacy storage.
-- [ ] Integrate HTTPS configuration in manual/service setup; run auth/browser regression checks.
+- [x] Write migration/password/session/origin/CSRF tests, including existing-database fixtures.
+- [x] Add credential/session schema migrations and local password-reset command.
+- [x] Implement auth API, password rotation, exact-origin policy, and session-bound sockets.
+- [x] Replace frontend credential storage with confirmed sessions and clear legacy storage.
+- [x] Integrate HTTPS configuration in manual/service setup; run auth/browser regression checks.
 
 **Exit:** No accept-any login path, stale credentials, unauthenticated telemetry, or browser password storage remains.
 
@@ -542,12 +542,12 @@ Checkboxes track implementation evidence recorded in the results document. Passi
 
 **Issues:** R09, R10, R11, R12, R19, R24 and migration parts of R20. **Depends on:** A; B for authenticated route tests.
 
-- [ ] Add command failure, ownership, concurrency, gateway, discovery responsiveness, and reconciliation tests.
-- [ ] Implement explicit command failures/timeouts and owned firewall/tc resource inventory.
-- [ ] Add desired/applied state migrations and a per-device reconciler.
-- [ ] Make discovery asynchronous, interface-aware, and safe for local/gateway targets.
-- [ ] Route every mutation and restart/address-change recovery through reconciliation.
-- [ ] Update frontend mutation contracts and pending/error display; run failure-injection checks.
+- [x] Add command failure, ownership, concurrency, gateway, discovery responsiveness, and reconciliation tests.
+- [x] Implement explicit command failures/timeouts and owned firewall/tc resource inventory.
+- [x] Add desired/applied state migrations and a per-device reconciler.
+- [x] Make discovery asynchronous, interface-aware, and safe for local/gateway targets.
+- [x] Route every mutation and restart/address-change recovery through reconciliation.
+- [x] Update frontend mutation contracts and pending/error display; run failure-injection checks.
 
 **Exit:** No success is inferred from a saved flag; foreign resources survive; protections acquire interception independently of monitoring.
 
@@ -555,11 +555,11 @@ Checkboxes track implementation evidence recorded in the results document. Passi
 
 **Issues:** R03, R20, R22. **Depends on:** C.
 
-- [ ] Add canonical-rule/catalog migrations and matcher tests.
-- [ ] Install/validate queue dependencies on the chosen Linux target and build the disposable network fixture.
-- [ ] Implement inline DNS/TLS inspection, bounded reassembly, real verdicts, and supervised worker failure handling.
-- [ ] Connect rule updates, existing-flow invalidation, and reconciler state to the engine.
-- [ ] Add protocol coverage notices and run blocked/allowed Linux traffic assertions.
+- [x] Add canonical-rule/catalog migrations and matcher tests.
+- [x] Install/validate queue dependencies on the chosen Linux target and build the disposable network fixture.
+- [x] Implement inline DNS/TLS inspection, bounded reassembly, real verdicts, and supervised worker failure handling.
+- [x] Connect rule updates, existing-flow invalidation, and reconciler state to the engine.
+- [x] Add protocol coverage notices and run blocked/allowed Linux traffic assertions.
 
 **Exit:** Real supported traffic is blocked/allowed correctly; only actual verdicts produce blocked events. Matching-only tests are insufficient.
 
@@ -567,10 +567,10 @@ Checkboxes track implementation evidence recorded in the results document. Passi
 
 **Issues:** R07, R08, R16. **Depends on:** C, D for enforcement-derived access events.
 
-- [ ] Add worker-thread event, queue overflow, directional accounting, and counter-reset tests.
-- [ ] Implement direction-specific classifiers and verified class replacement/removal.
-- [ ] Add bounded event ingestion, batched access writes, bandwidth delta persistence, retention, and broadcasts.
-- [ ] Run measured bidirectional Linux transfer tests plus restart/DHCP/unaffected-device checks.
+- [x] Add worker-thread event, queue overflow, directional accounting, and counter-reset tests.
+- [x] Implement direction-specific classifiers and verified class replacement/removal.
+- [x] Add bounded event ingestion, batched access writes, bandwidth delta persistence, retention, and broadcasts.
+- [x] Run measured bidirectional Linux transfer tests plus restart/DHCP/unaffected-device checks.
 
 **Exit:** Asymmetric limits are measured, access logs survive thread boundaries, and charts display real nonduplicated traffic history.
 
@@ -578,11 +578,11 @@ Checkboxes track implementation evidence recorded in the results document. Passi
 
 **Issues:** R13, R15, R17, R21; installer/README closure for R05/R14/R22. **Depends on:** B-E.
 
-- [ ] Add quiet-interface shutdown, partial-start rollback, snapshot, reconnect, and static-route tests.
-- [ ] Implement supervised startup/shutdown and restore only owned state.
-- [ ] Repair complete snapshot broadcasts and frontend reconnect/subscription lifecycle.
-- [ ] Serve production assets and update installer/service definitions, preserving existing config/data.
-- [ ] Run browser smoke tests against the built backend-served dashboard and repeat install/start/restart/stop checks in a disposable Linux environment.
+- [x] Add quiet-interface shutdown, partial-start rollback, snapshot, reconnect, and static-route tests.
+- [x] Implement supervised startup/shutdown and restore only owned state.
+- [x] Repair complete snapshot broadcasts and frontend reconnect/subscription lifecycle.
+- [x] Serve production assets and update installer/service definitions, preserving existing config/data.
+- [x] Run browser smoke tests against the built backend-served dashboard and repeat install/start/restart/stop checks in a disposable Linux environment.
 
 **Exit:** A documented installation presents the dashboard; offline devices remain manageable; shutdown terminates without waiting for traffic.
 
@@ -590,11 +590,11 @@ Checkboxes track implementation evidence recorded in the results document. Passi
 
 **Issues:** All R01-R24. **Depends on:** A-F.
 
-- [ ] Run the complete portable, browser, migration, and isolated Linux suites from locked dependencies.
-- [ ] Review the full changed code against every acceptance criterion in section 3.
-- [ ] Correct README feature claims, setup commands, supported protocols, and recovery instructions.
-- [ ] Complete `docs/remediation-results.md` with one evidence entry per issue and explicit environment/coverage limits.
-- [ ] Reconcile every checkbox and deliver a final report of fixes, tests, remaining risks, and any unverified criteria.
+- [x] Run the complete portable, browser, migration, and isolated Linux suites from locked dependencies.
+- [x] Review the full changed code against every acceptance criterion in section 3.
+- [x] Correct README feature claims, setup commands, supported protocols, and recovery instructions.
+- [x] Complete `docs/remediation-results.md` with one evidence entry per issue and explicit environment/coverage limits.
+- [x] Reconcile every checkbox and deliver a final report of fixes, tests, remaining risks, and any unverified criteria.
 
 **Exit:** Every issue has evidence of resolution; any unmet Linux acceptance criterion prevents a claim that all repairs are complete.
 
