@@ -1,4 +1,5 @@
 import pytest
+import json
 from core.traffic_controller import TrafficController
 from utils.commands import CommandResult
 
@@ -90,3 +91,32 @@ async def test_failed_limit_update_restores_previous_kernel_configuration():
     restored_classes = [call for call in calls if call[1:3] == ["class", "replace"]][-2:]
     assert "500kbit" in restored_classes[0]
     assert "2000kbit" in restored_classes[1]
+
+
+@pytest.mark.asyncio
+async def test_owned_directional_class_counters_are_mapped_to_device_bytes():
+    class Runner:
+        async def run(self, argv, **kwargs):
+            if argv[1:5] == ["-j", "-s", "class", "show"]:
+                return CommandResult(0, json.dumps([
+                    {"handle": "1:a", "stats": {"bytes": 1234}},
+                    {"handle": "1:b", "stats": {"bytes": 5678}},
+                    {"handle": "1:9999", "stats": {"bytes": 999999}},
+                ]), "")
+            return CommandResult(0, "[]", "")
+
+    controller = TrafficController("eth0", runner=Runner())
+    assert await controller.set_bandwidth_limit(
+        "AA:BB:CC:DD:EE:01", 2000, 500, ip_address="192.0.2.3"
+    )
+
+    counters = await controller.read_bandwidth_counters()
+
+    assert counters == {
+        "AA:BB:CC:DD:EE:01": {
+            "ip_address": "192.0.2.3",
+            "class_id": 10,
+            "bytes_sent": 1234,
+            "bytes_received": 5678,
+        }
+    }

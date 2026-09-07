@@ -5,7 +5,7 @@ from importlib import import_module
 _EXPORTS = {
     "DeviceManager": "device_manager", "ARPSpoofer": "arp_spoofer",
     "PacketAnalyzer": "packet_analyzer", "TrafficController": "traffic_controller",
-    "BandwidthMonitor": "traffic_controller", "ContentBlocker": "content_blocker",
+    "BandwidthMonitor": "bandwidth_monitor", "ContentBlocker": "content_blocker",
     "DeviceBlocker": "device_blocker",
 }
 

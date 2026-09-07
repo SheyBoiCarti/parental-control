@@ -21,12 +21,15 @@ async def test_shutdown_attempts_remaining_cleanup_and_database_after_failure(mo
         device_manager=component("scan", "stop_periodic_scan", True),
         arp_spoofer=component("arp", "stop"),
         packet_analyzer=component("capture", "stop", True),
+        bandwidth_monitor=component("accounting", "stop"),
         traffic_controller=component("traffic", "shutdown"),
         device_blocker=component("firewall", "shutdown"),
     )
     with pytest.raises(ExceptionGroup) as error:
         await app.stop_services()
-    assert calls == ["scan", "arp", "capture", "traffic", "firewall", "database"]
+    assert calls == [
+        "scan", "arp", "capture", "accounting", "traffic", "firewall", "database"
+    ]
     assert len(error.value.exceptions) == 2
 
 
