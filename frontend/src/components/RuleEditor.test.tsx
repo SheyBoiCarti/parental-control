@@ -44,3 +44,18 @@ it('shows persisted rule validation and enforcement failures', async () => {
   expect(screen.getByText('Invalid legacy rule; edit or remove this rule')).toBeTruthy()
   expect(screen.getByText('Failed to apply')).toBeTruthy()
 })
+
+it('shows catalog display names while retaining stable app identifiers', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    apps: [{
+      name: 'example_chat',
+      display_name: 'Example Chat',
+      domains: ['*.example.test'],
+    }],
+  }))))
+  render(<RuleEditor rules={[]} onCreateDomainBlockRule={vi.fn()}
+    onCreateAppBlockRule={vi.fn()} onCreateBandwidthRule={vi.fn()} onDeleteRule={vi.fn()} />)
+
+  const option = await screen.findByRole('option', { name: 'Example Chat' }) as HTMLOptionElement
+  expect(option.value).toBe('example_chat')
+})

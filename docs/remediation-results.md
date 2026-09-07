@@ -225,3 +225,10 @@ Implementation is underway. Startup repairs are verified locally; broader authen
 - R21 partial: service cleanup now has a ten-second total budget below the systemd stop timeout. The budget is shared across remaining cleanup operations; a stalled cleanup is cancelled and recorded while later components and database closure are still attempted.
 - Portable evidence includes recovery after a failed reconciliation pass and a stalled cleanup that terminates within its injected budget while closing the database. Full suites pass 165 tests on Python 3.11 and Python 3.12; frontend TypeScript and ESLint pass.
 - Remaining R10/R21 acceptance includes per-component retry outcomes, signal-driven process tests, partial acquisition at every startup step, queue drain timeout, non-cooperative worker handling and Linux proof of no lingering tasks/hooks/threads.
+
+## Application catalog identity checkpoint
+
+- R22 portable behavior now carries both the stable application identifier and catalog-authored display name through the available-apps API. The rule editor displays the authored name while persisting the stable identifier.
+- Active app rules whose signatures have disappeared remain stored and receive the durable diagnostic `Application signature is unavailable`; they are excluded from matching and cannot be reported as applied. Reloading a restored signature clears only this diagnostic and resumes matching.
+- Full suites pass 167 tests on Python 3.11 and Python 3.12. Fifteen Node22 frontend tests, ESLint and the production build pass. The existing approximately 614 kB bundle warning remains.
+- R22 still needs the final shipped-catalog/API enumeration assertion and browser acceptance; live external file watching is outside the explicit startup/reload design.

@@ -342,11 +342,4 @@ async def delete_rule(
 async def list_available_apps(user: str = Depends(get_current_user)):
     """Get list of apps that can be blocked."""
     state = get_app_state()
-    apps = state.content_blocker.get_available_apps()
-
-    return {
-        "apps": [
-            {"name": name, "domains": domains}
-            for name, domains in apps.items()
-        ]
-    }
+    return {"apps": state.content_blocker.get_available_app_records()}

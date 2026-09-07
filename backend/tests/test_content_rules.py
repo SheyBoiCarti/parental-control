@@ -60,3 +60,57 @@ async def test_invalid_mac_on_rule_route_is_validation_error():
     with pytest.raises(HTTPException) as error:
         await get_device_by_mac("invalid")
     assert error.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_unresolved_app_rule_is_visible_and_recovers_when_signature_returns(
+    tmp_path,
+):
+    from config import AppConfig
+    from db import database
+    from db.models import AppSignature, Device, DeviceRule
+    from sqlalchemy import select
+
+    database.configure_database(AppConfig(data_dir=tmp_path))
+    try:
+        await database.init_db()
+        async with database.get_session() as session:
+            device = Device(mac_address=MAC)
+            session.add(device)
+            await session.flush()
+            session.add(DeviceRule(
+                device_id=device.id,
+                rule_type="block_app",
+                rule_value={"app": "removed_app"},
+                canonical_value="removed_app",
+                is_active=True,
+            ))
+
+        blocker = ContentBlocker()
+        await blocker.initialize()
+        async with database.get_session() as session:
+            rule = (await session.execute(
+                select(DeviceRule).where(DeviceRule.canonical_value == "removed_app")
+            )).scalar_one()
+            assert rule.validation_error == "Application signature is unavailable"
+        assert blocker.should_block(MAC, "chat.example.test") is None
+
+        async with database.get_session() as session:
+            session.add(AppSignature(
+                app_name="removed_app",
+                display_name="Returned App",
+                domains=["*.example.test"],
+                ip_ranges=[],
+                is_builtin=False,
+            ))
+        await blocker._load_app_signatures()
+        await blocker._load_device_rules()
+
+        async with database.get_session() as session:
+            recovered = (await session.execute(
+                select(DeviceRule).where(DeviceRule.canonical_value == "removed_app")
+            )).scalar_one()
+            assert recovered.validation_error is None
+        assert blocker.should_block(MAC, "chat.example.test")
+    finally:
+        await database.close_db()

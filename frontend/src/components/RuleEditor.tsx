@@ -140,7 +140,7 @@ export default function RuleEditor({
                 .filter((app) => !blockedApps.includes(app.name))
                 .map((app) => (
                   <option key={app.name} value={app.name}>
-                    {app.name.charAt(0).toUpperCase() + app.name.slice(1)}
+                    {app.display_name}
                   </option>
                 ))}
             </select>
