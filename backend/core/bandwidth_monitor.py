@@ -162,17 +162,29 @@ class BandwidthMonitor:
                 except TimeoutError:
                     pass
 
-        self._task = asyncio.create_task(run(), name="bandwidth-monitor")
+        task = asyncio.create_task(run(), name="bandwidth-monitor")
+        self._task = task
+        task.add_done_callback(self._clear_finished_task)
+
+    def _clear_finished_task(self, task: asyncio.Task) -> None:
+        if self._task is task:
+            self._task = None
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
 
     async def stop(self, timeout: float = 2.0) -> None:
         if self._task is None:
             return
         self._stop.set()
         task = self._task
-        self._task = None
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         except TimeoutError as error:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
             raise RuntimeError("Bandwidth monitor did not stop") from error
+        finally:
+            if task.done() and self._task is task:
+                self._task = None

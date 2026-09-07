@@ -210,3 +210,87 @@ async def test_shutdown_budget_cancels_stalled_cleanup_and_still_closes_database
     assert time.monotonic() - started < 0.2
     assert cancelled.is_set()
     assert calls[-1] == "database"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_does_not_wait_for_cleanup_that_suppresses_cancellation():
+    calls = []
+    release = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+
+    async def cancellation_resistant_cleanup():
+        calls.append("stalled")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+
+    async def close_database():
+        calls.append("database")
+
+    app = ParentalControlApp(AppConfig())
+    app._register_cleanup("database", close_database)
+    app._register_cleanup("stalled", cancellation_resistant_cleanup)
+
+    shutdown = asyncio.create_task(app.stop_services(timeout=0.02))
+    while calls != ["stalled"]:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0.03)
+
+    try:
+        assert shutdown.done()
+        assert cancellation_seen.is_set()
+        assert calls == ["stalled", "database"]
+        assert app._cleanup_stack[-1][0] == "stalled"
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(shutdown, return_exceptions=True), timeout=0.1)
+
+    with pytest.raises(ExceptionGroup, match="shutdown failed"):
+        await shutdown
+    pending = app._cleanup_tasks[app._cleanup_stack[-1]]
+    await asyncio.wait_for(asyncio.shield(pending), timeout=0.1)
+    await app.stop_services(timeout=0.1)
+    assert not app._cleanup_stack
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_startup_error_when_cleanup_fails(monkeypatch):
+    app = ParentalControlApp(AppConfig())
+
+    async def failed_cleanup():
+        raise RuntimeError("cleanup failed")
+
+    async def initialize_auth():
+        app._register_cleanup("broken", failed_cleanup)
+
+    async def initialize():
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(app, "initialize_auth", initialize_auth)
+    monkeypatch.setattr(app, "initialize", initialize)
+    monkeypatch.setattr("main.os.geteuid", lambda: 0, raising=False)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await app.run()
+
+
+@pytest.mark.asyncio
+async def test_configure_database_failure_does_not_close_unacquired_database(monkeypatch):
+    calls = []
+
+    def configure_database(config):
+        raise RuntimeError("configuration failed")
+
+    async def close_database():
+        calls.append("database")
+
+    monkeypatch.setattr("db.database.configure_database", configure_database)
+    monkeypatch.setattr("db.database.close_db", close_database)
+
+    app = ParentalControlApp(AppConfig())
+    with pytest.raises(RuntimeError, match="configuration failed"):
+        await app.initialize_auth()
+
+    assert calls == []

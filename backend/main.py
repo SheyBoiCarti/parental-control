@@ -108,7 +108,11 @@ class ParentalControlApp:
         self.bandwidth_monitor = None
         self.reconciliation_worker = None
         self._cleanup_stack: list[tuple[str, Callable[[], Awaitable[Any]]]] = []
+        self._cleanup_tasks: dict[
+            tuple[str, Callable[[], Awaitable[Any]]], asyncio.Task[Any]
+        ] = {}
         self._lifecycle_managed = False
+        self._shutdown_deadline: float | None = None
 
     def _register_cleanup(
         self, name: str, cleanup: Callable[[], Awaitable[Any]]
@@ -128,6 +132,8 @@ class ParentalControlApp:
 
     async def _rollback_startup_failure(self) -> None:
         """Attempt every registered cleanup while preserving the startup error."""
+        if not self._lifecycle_managed:
+            return
         try:
             await self.stop_services()
         except BaseException:
@@ -307,6 +313,29 @@ class ParentalControlApp:
             "packet analyzer", self.state.packet_analyzer.start, self.state.packet_analyzer.stop
         )
 
+    def _shutdown_deadline_for(self, timeout: float) -> float:
+        loop = asyncio.get_running_loop()
+        if self._shutdown_deadline is None:
+            self._shutdown_deadline = loop.time() + timeout
+        return self._shutdown_deadline
+
+    def _observe_cleanup_task(
+        self,
+        action: tuple[str, Callable[[], Awaitable[Any]]],
+        task: asyncio.Task[Any],
+    ) -> None:
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            logging.getLogger(__name__).error("%s cleanup task was cancelled", action[0])
+            return
+        if error is not None:
+            logging.getLogger(__name__).error(
+                "%s cleanup task failed after shutdown advanced",
+                action[0],
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
     async def stop_services(self, timeout: float = 10.0) -> None:
         from db.database import close_db
 
@@ -317,27 +346,47 @@ class ParentalControlApp:
         failures = []
         completed = []
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        for index, (name, stop) in enumerate(cleanup):
+        deadline = self._shutdown_deadline_for(timeout)
+        for index, action in enumerate(cleanup):
+            name, stop = action
             remaining = max(0.0, deadline - loop.time())
             operations_left = len(cleanup) - index
             operation_timeout = max(0.001, remaining / operations_left)
+            task = self._cleanup_tasks.get(action)
+            if task is None:
+                try:
+                    task = asyncio.create_task(stop(), name=f"cleanup-{name}")
+                except Exception as error:
+                    logging.getLogger(__name__).exception("%s cleanup could not start", name)
+                    failures.append(error)
+                    continue
+                self._cleanup_tasks[action] = task
+                task.add_done_callback(
+                    lambda done, current=action: self._observe_cleanup_task(current, done)
+                )
             try:
-                await asyncio.wait_for(stop(), timeout=operation_timeout)
+                await asyncio.wait_for(asyncio.shield(task), timeout=operation_timeout)
             except TimeoutError:
                 logging.getLogger(__name__).error("%s cleanup exceeded its shutdown budget", name)
+                task.cancel()
                 failures.append(RuntimeError(f"{name} cleanup timed out"))
             except asyncio.CancelledError:
                 logging.getLogger(__name__).error("%s cleanup was cancelled", name)
                 failures.append(RuntimeError(f"{name} cleanup was cancelled"))
+                if task.done():
+                    self._cleanup_tasks.pop(action, None)
             except Exception as error:
                 logging.getLogger(__name__).exception("%s cleanup failed", name)
                 failures.append(error)
+                self._cleanup_tasks.pop(action, None)
             else:
-                completed.append((name, stop))
+                completed.append(action)
+                self._cleanup_tasks.pop(action, None)
                 self._mark_cleaned(name)
         if self._lifecycle_managed and completed:
             self._cleanup_stack = [action for action in self._cleanup_stack if action not in completed]
+        if not self._cleanup_stack and not self._cleanup_tasks:
+            self._shutdown_deadline = None
         if failures:
             raise ExceptionGroup("Service shutdown failed", failures)
 
@@ -382,6 +431,7 @@ class ParentalControlApp:
         import uvicorn
         from api.app import create_app
 
+        primary_error: BaseException | None = None
         try:
             await self.initialize_auth()
             if not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -390,8 +440,18 @@ class ParentalControlApp:
             await self.start_services()
             uvicorn_config = build_uvicorn_config(self.config, create_app(self.config, auth_service=self.auth_service))
             await uvicorn.Server(uvicorn_config).serve()
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            await self.stop_services()
+            try:
+                await self.stop_services()
+            except BaseException:
+                if primary_error is None:
+                    raise
+                logging.getLogger(__name__).exception(
+                    "Service shutdown failed after application failure"
+                )
 
 
 def build_parser() -> argparse.ArgumentParser:
