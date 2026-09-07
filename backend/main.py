@@ -147,8 +147,8 @@ class ParentalControlApp:
 
         try:
             configure_database(self.config)
-            await init_db()
             self._register_cleanup("database", close_db)
+            await init_db()
             self.auth_service = AuthService(get_session)
             await self.auth_service.ensure_configured()
         except BaseException:
@@ -444,14 +444,15 @@ class ParentalControlApp:
             primary_error = error
             raise
         finally:
-            try:
-                await self.stop_services()
-            except BaseException:
-                if primary_error is None:
-                    raise
-                logging.getLogger(__name__).exception(
-                    "Service shutdown failed after application failure"
-                )
+            if self._lifecycle_managed:
+                try:
+                    await self.stop_services()
+                except BaseException:
+                    if primary_error is None:
+                        raise
+                    logging.getLogger(__name__).exception(
+                        "Service shutdown failed after application failure"
+                    )
 
 
 def build_parser() -> argparse.ArgumentParser:
