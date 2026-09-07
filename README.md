@@ -165,6 +165,7 @@ username (default `admin`) with the password you set. There is no passwordless l
 │  • Device Manager - ARP scanning, MAC tracking              │
 │  • ARP Spoofer - MITM positioning via Scapy                 │
 │  • Packet Analyzer - DNS/SNI inspection                     │
+│  • Inline Enforcer - DNS/TLS verdicts and QUIC fallback     │
 │  • Traffic Controller - Bandwidth limits via tc             │
 │  • Content Blocker - App/domain blocking                    │
 │  • Device Blocker - iptables MAC filtering                  │
@@ -205,13 +206,34 @@ username (default `admin`) with the password you set. There is no passwordless l
 
 ## Limitations
 
-- **Encrypted DNS (DoH/DoT)**: Can bypass DNS-based blocking
-  - Mitigation: Block known DoH provider IPs
-- **VPNs**: Bypass all blocking when active
-  - Mitigation: Can detect and block VPN protocols
-- **HTTPS**: Cannot inspect encrypted content
-  - Note: SNI inspection works without decryption
-- **Static IP devices**: May need manual IP updates
+- Enforcement covers forwarded IPv4 devices that the appliance can intercept on the selected LAN. IPv6 is not filtered.
+- Plain DNS over UDP/TCP and TLS ClientHello SNI are inspected. Encrypted DNS, encrypted ClientHello, proxies, VPNs and non-TLS protocols can bypass domain/app rules.
+- UDP/443 is dropped for protected devices to encourage TCP/TLS fallback; applications that require QUIC may fail instead of falling back.
+- App signatures are domain lists, not guarantees that every service endpoint is covered. Missing catalog entries remain visible as unresolved rules.
+- DHCP address changes are reconciled after discovery. Until a current address is known, saved enforcement remains pending.
+- Bandwidth byte totals come from Linux `tc` class counters and include the bytes reported by the kernel classifier, including network headers counted by `tc`.
+
+## Verification
+
+Portable checks never invoke host firewall, traffic-control, ARP or packet-capture commands:
+
+```bash
+python -m pytest backend/tests -q
+cd frontend
+npm ci
+npm run lint
+npm run test -- --run
+npm run build
+```
+
+The supported portable matrix is Python 3.11/3.12 and Node 22. CI currently runs on Ubuntu 24.04. The separate kernel job uses `unshare --net` and refuses to run when its network namespace matches PID 1:
+
+```bash
+sudo --preserve-env=PATH,GITHUB_WORKSPACE \
+  unshare --net --mount-proc bash scripts/run-linux-integration.sh
+```
+
+That kernel job proves real `tc`, iptables and NFQUEUE adapter ownership in an ephemeral namespace. It does not represent every Linux distribution or network topology; controlled end-to-end throughput and protocol traffic acceptance remains tracked in [the remediation results](docs/remediation-results.md).
 
 ## Troubleshooting
 
