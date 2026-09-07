@@ -179,3 +179,32 @@ async def test_failed_rule_removal_restores_intent_and_avoids_deleted_broadcast(
         broadcast.assert_not_awaited()
     finally:
         await database.close_db()
+
+
+@pytest.mark.asyncio
+async def test_available_apps_return_stable_identifier_and_catalog_display_name(
+    monkeypatch,
+):
+    blocker = SimpleNamespace(
+        get_available_apps=lambda: {"example_chat": ["*.example.test"]},
+        get_available_app_records=lambda: [
+            {
+                "name": "example_chat",
+                "display_name": "Example Chat",
+                "domains": ["*.example.test"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        rules,
+        "_app_state",
+        SimpleNamespace(content_blocker=blocker),
+    )
+
+    response = await rules.list_available_apps(user="admin")
+
+    assert response == {"apps": [{
+        "name": "example_chat",
+        "display_name": "Example Chat",
+        "domains": ["*.example.test"],
+    }]}

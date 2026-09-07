@@ -78,6 +78,7 @@ export interface AccessLog {
 
 export interface AvailableApp {
   name: string
+  display_name: string
   domains: string[]
 }
 

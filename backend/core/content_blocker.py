@@ -13,6 +13,7 @@ from utils.mac_utils import normalize_mac
 from utils.domains import canonical_domain
 
 logger = logging.getLogger(__name__)
+UNRESOLVED_APP_ERROR = "Application signature is unavailable"
 
 
 @dataclass
@@ -43,6 +44,7 @@ class ContentBlocker:
     def __init__(self):
         self._device_rules: Dict[str, List[BlockRule]] = {}  # MAC -> rules
         self._app_signatures: Dict[str, List[str]] = {}  # app_name -> domain patterns
+        self._app_display_names: Dict[str, str] = {}
         self._initialized = False
 
     async def initialize(self):
@@ -65,8 +67,13 @@ class ContentBlocker:
                 sig.app_name: [canonical_domain(domain) for domain in sig.domains]
                 for sig in signatures
             }
+            display_names = {
+                sig.app_name: sig.display_name
+                for sig in signatures
+            }
 
         self._app_signatures = refreshed
+        self._app_display_names = display_names
         for rules in self._device_rules.values():
             for rule in rules:
                 if rule.rule_type == 'app':
@@ -92,6 +99,14 @@ class ContentBlocker:
             devices = {d.id: d.mac_address for d in device_result.scalars().all()}
 
             for rule in rules:
+                if rule.rule_type == 'block_app':
+                    app_name = rule.rule_value.get('app')
+                    if app_name and app_name not in self._app_signatures:
+                        if rule.validation_error in {None, UNRESOLVED_APP_ERROR}:
+                            rule.validation_error = UNRESOLVED_APP_ERROR
+                        continue
+                    if rule.validation_error == UNRESOLVED_APP_ERROR:
+                        rule.validation_error = None
                 if rule.validation_error:
                     continue
                 mac = devices.get(rule.device_id)
@@ -102,7 +117,6 @@ class ContentBlocker:
                     refreshed[mac] = []
 
                 if rule.rule_type == 'block_app':
-                    app_name = rule.rule_value.get('app')
                     if app_name and app_name in self._app_signatures:
                         block_rule = BlockRule(
                             rule_type='app',
@@ -293,6 +307,17 @@ class ContentBlocker:
     def get_available_apps(self) -> Dict[str, List[str]]:
         """Get all available apps and their domain patterns."""
         return self._app_signatures.copy()
+
+    def get_available_app_records(self) -> List[dict]:
+        """Return stable identifiers with catalog-authored display names."""
+        return [
+            {
+                "name": name,
+                "display_name": self._app_display_names.get(name, name),
+                "domains": domains.copy(),
+            }
+            for name, domains in self._app_signatures.items()
+        ]
 
     def clear_device_rules(self, mac: str):
         """Clear all blocking rules for a device."""
