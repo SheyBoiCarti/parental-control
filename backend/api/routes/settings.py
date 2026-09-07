@@ -1,11 +1,11 @@
 """Settings API routes."""
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from api.auth import get_current_user, hash_password
+from api.auth import COOKIE_NAME, get_auth_service, get_current_user
 from db.database import get_session
 from db.models import Setting
 
@@ -25,7 +25,13 @@ class SettingsListResponse(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     """Password change request."""
+    current_password: str
     new_password: str
+
+
+def reserved_key(key: str) -> bool:
+    key = key.lower()
+    return any(part in key for part in ("password", "credential", "session", "csrf", "token", "secret")) or key.startswith("auth_")
 
 
 # App state reference
@@ -51,13 +57,15 @@ async def get_settings(user: str = Depends(get_current_user)):
         settings = result.scalars().all()
 
     return SettingsListResponse(
-        settings={s.key: s.value for s in settings}
+        settings={s.key: s.value for s in settings if not reserved_key(s.key)}
     )
 
 
 @router.get("/{key}", response_model=SettingResponse)
 async def get_setting(key: str, user: str = Depends(get_current_user)):
     """Get a specific setting."""
+    if reserved_key(key):
+        raise HTTPException(404, "Setting not found")
     async with get_session() as session:
         result = await session.execute(
             select(Setting).where(Setting.key == key)
@@ -77,6 +85,8 @@ async def update_setting(
     user: str = Depends(get_current_user)
 ):
     """Update a setting."""
+    if reserved_key(key):
+        raise HTTPException(422, "Reserved setting key")
     async with get_session() as session:
         result = await session.execute(
             select(Setting).where(Setting.key == key)
@@ -96,32 +106,17 @@ async def update_setting(
 
 @router.post("/password")
 async def change_password(
-    request: PasswordChangeRequest,
+    body: PasswordChangeRequest,
+    request: Request,
+    response: Response,
     user: str = Depends(get_current_user)
 ):
     """Change the admin password."""
-    if len(request.new_password) < 8:
-        raise HTTPException(
-            status_code=400,
-            detail="Password must be at least 8 characters"
-        )
-
-    password_hash = hash_password(request.new_password)
-
-    async with get_session() as session:
-        result = await session.execute(
-            select(Setting).where(Setting.key == "password_hash")
-        )
-        setting = result.scalar_one_or_none()
-
-        if setting:
-            setting.value = password_hash
-        else:
-            setting = Setting(key="password_hash", value=password_hash)
-            session.add(setting)
-
-        await session.commit()
-
+    try:
+        await get_auth_service(request).change_password(body.current_password, body.new_password)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    response.delete_cookie(COOKIE_NAME, path="/", secure=request.url.scheme == "https", httponly=True, samesite="strict")
     return {"status": "password_changed"}
 
 

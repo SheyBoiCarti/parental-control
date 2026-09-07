@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getNetworkInfo, changePassword } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
+import CoverageNotice from '../components/CoverageNotice'
 import {
   Network,
   Shield,
@@ -29,6 +30,7 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null)
 
   const [newPassword, setNewPassword] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordError, setPasswordError] = useState<string | null>(null)
   const [passwordSuccess, setPasswordSuccess] = useState(false)
@@ -67,9 +69,10 @@ export default function Settings() {
     setIsChangingPassword(true)
 
     try {
-      await changePassword(newPassword)
+      await changePassword(currentPassword, newPassword)
       setPasswordSuccess(true)
       setNewPassword('')
+      setCurrentPassword('')
       setConfirmPassword('')
     } catch (e) {
       setPasswordError(e instanceof Error ? e.message : 'Failed to change password')
@@ -95,6 +98,8 @@ export default function Settings() {
           {error}
         </div>
       )}
+
+      <CoverageNotice />
 
       {/* Network Configuration */}
       <div className="card">
@@ -226,6 +231,20 @@ export default function Settings() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
+              Current Password
+            </label>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              className="input w-full"
+              placeholder="Enter current password"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
               New Password
             </label>
             <input
@@ -252,7 +271,7 @@ export default function Settings() {
 
           <button
             onClick={handleChangePassword}
-            disabled={isChangingPassword || !newPassword || !confirmPassword}
+            disabled={isChangingPassword || !currentPassword || !newPassword || !confirmPassword}
             className="btn btn-primary"
           >
             {isChangingPassword ? 'Changing...' : 'Change Password'}

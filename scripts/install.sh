@@ -52,7 +52,10 @@ apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    python3-dev \
+    build-essential \
     libpcap-dev \
+    libnetfilter-queue-dev \
     iptables \
     iproute2 \
     net-tools \
@@ -74,7 +77,7 @@ source venv/bin/activate
 # Install Python dependencies
 echo -e "${GREEN}[4/8] Installing Python dependencies...${NC}"
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
 
 # Create data directory
 echo -e "${GREEN}[5/8] Creating data directory...${NC}"
@@ -82,25 +85,24 @@ mkdir -p "$INSTALL_DIR/data"
 chown -R root:root "$INSTALL_DIR/data"
 chmod 700 "$INSTALL_DIR/data"
 
-# Check for Node.js (optional, for frontend development)
-echo -e "${GREEN}[6/8] Checking Node.js for frontend...${NC}"
-if command -v node &> /dev/null; then
-    NODE_VERSION=$(node --version)
-    echo -e "${YELLOW}Node.js $NODE_VERSION is installed${NC}"
-
-    # Build frontend
-    echo "Building frontend..."
-    cd "$INSTALL_DIR/frontend"
-    npm install
-    npm run build
-
-    # Copy built files to serve statically
-    mkdir -p "$INSTALL_DIR/backend/static"
-    cp -r dist/* "$INSTALL_DIR/backend/static/"
-else
-    echo -e "${YELLOW}Node.js not found. Skipping frontend build.${NC}"
-    echo -e "${YELLOW}Frontend can be built later with: cd frontend && npm install && npm run build${NC}"
+# A normal installation includes the production dashboard.
+echo -e "${GREEN}[6/8] Building the dashboard...${NC}"
+if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+    echo -e "${RED}Node.js 22 and npm are required to build the dashboard.${NC}"
+    exit 1
 fi
+if [ "$(node -p 'process.versions.node.split(".")[0]')" != "22" ]; then
+    echo -e "${RED}Install Node.js 22 before running this installer.${NC}"
+    exit 1
+fi
+cd "$INSTALL_DIR/frontend"
+npm ci
+npm run build
+test -s dist/index.html
+test -d dist/assets
+mkdir -p "$INSTALL_DIR/backend/static"
+cp -r dist/. "$INSTALL_DIR/backend/static/"
+test -s "$INSTALL_DIR/backend/static/index.html"
 
 # Detect network interface
 echo -e "${GREEN}[7/8] Detecting network interface...${NC}"
@@ -112,21 +114,8 @@ echo -e "${YELLOW}Default network interface: $DEFAULT_INTERFACE${NC}"
 
 # Create configuration
 echo -e "${GREEN}[8/8] Creating configuration...${NC}"
-cat > "$INSTALL_DIR/backend/.env" << EOF
-# Network Configuration
-NETWORK_INTERFACE=$DEFAULT_INTERFACE
-
-# API Configuration
-API_HOST=0.0.0.0
-API_PORT=8080
-
-# Authentication (generate hash with: python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode())")
-AUTH_USERNAME=admin
-AUTH_PASSWORD_HASH=
-
-# Logging
-LOG_LEVEL=INFO
-EOF
+python "$INSTALL_DIR/scripts/configure_install.py" \
+    "$INSTALL_DIR/backend/.env" "$INSTALL_DIR/backend/.env.example" "$DEFAULT_INTERFACE"
 
 # Install systemd service
 echo -e "${GREEN}Installing systemd service...${NC}"
@@ -140,7 +129,7 @@ Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR/backend
 Environment=PATH=$INSTALL_DIR/backend/venv/bin:/usr/bin:/bin
-ExecStart=$INSTALL_DIR/backend/venv/bin/python main.py
+ExecStart="$INSTALL_DIR/backend/venv/bin/python" "$INSTALL_DIR/backend/main.py" --env-file "$INSTALL_DIR/backend/.env"
 Restart=on-failure
 RestartSec=5
 
@@ -167,8 +156,8 @@ echo "  - Data directory: $INSTALL_DIR/data"
 echo "  - Network interface: $DEFAULT_INTERFACE"
 echo ""
 echo -e "${YELLOW}To set an admin password:${NC}"
-echo "  1. Generate hash: python3 -c \"import bcrypt; print(bcrypt.hashpw(b'YOUR_PASSWORD', bcrypt.gensalt()).decode())\""
-echo "  2. Add to $INSTALL_DIR/backend/.env as AUTH_PASSWORD_HASH"
+echo "  sudo $INSTALL_DIR/backend/venv/bin/python $INSTALL_DIR/backend/main.py --env-file $INSTALL_DIR/backend/.env --reset-password"
+echo "  Existing credentials are preserved. This command explicitly resets them."
 echo ""
 echo -e "${YELLOW}Commands:${NC}"
 echo "  Start service:   sudo systemctl start parental-control"
@@ -177,6 +166,7 @@ echo "  Enable on boot:  sudo systemctl enable parental-control"
 echo "  View logs:       sudo journalctl -u parental-control -f"
 echo ""
 echo -e "${YELLOW}Access the web dashboard at:${NC}"
-echo "  http://$(hostname -I | awk '{print $1}'):8080"
+echo "  New installs listen at http://127.0.0.1:8080 on the appliance. Existing listener settings are preserved."
+echo "  Configure HTTPS_CERT_FILE, HTTPS_KEY_FILE, API_HOST and ALLOWED_ORIGINS for remote access."
 echo ""
 echo -e "${GREEN}Start the service with: sudo systemctl start parental-control${NC}"

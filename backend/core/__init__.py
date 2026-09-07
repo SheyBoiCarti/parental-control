@@ -1,11 +1,19 @@
 """Core network control modules."""
 
-from .device_manager import DeviceManager
-from .arp_spoofer import ARPSpoofer
-from .packet_analyzer import PacketAnalyzer
-from .traffic_controller import TrafficController, BandwidthMonitor
-from .content_blocker import ContentBlocker
-from .device_blocker import DeviceBlocker
+from importlib import import_module
+
+_EXPORTS = {
+    "DeviceManager": "device_manager", "ARPSpoofer": "arp_spoofer",
+    "PacketAnalyzer": "packet_analyzer", "TrafficController": "traffic_controller",
+    "BandwidthMonitor": "bandwidth_monitor", "ContentBlocker": "content_blocker",
+    "DeviceBlocker": "device_blocker",
+}
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    return getattr(import_module(f".{_EXPORTS[name]}", __name__), name)
 
 __all__ = [
     'DeviceManager',

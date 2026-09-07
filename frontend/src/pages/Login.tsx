@@ -24,8 +24,8 @@ export default function Login() {
       } else {
         setError('Invalid username or password')
       }
-    } catch {
-      setError('Failed to connect to server')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to connect to server')
     } finally {
       setIsLoading(false)
     }
@@ -44,7 +44,7 @@ export default function Login() {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {error && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            <div role="alert" className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
               {error}
             </div>
           )}
@@ -124,7 +124,7 @@ export default function Login() {
         </form>
 
         <p className="text-center text-sm text-gray-500 mt-6">
-          Default credentials: admin / (no password)
+          Sign in with the administrator account configured during setup.
         </p>
       </div>
     </div>

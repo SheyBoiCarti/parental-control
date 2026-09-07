@@ -1,6 +1,7 @@
 """ARP spoofing module for traffic interception."""
 
 import asyncio
+import ipaddress
 import logging
 from typing import Dict, Optional, Set
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 from scapy.all import ARP, Ether, sendp, getmacbyip, conf
 
 from utils.mac_utils import normalize_mac
-from utils.network_utils import enable_ip_forwarding, disable_ip_forwarding
+from utils.network_utils import enable_ip_forwarding, disable_ip_forwarding, get_ip_forwarding_status
 
 logger = logging.getLogger(__name__)
 
@@ -37,22 +38,52 @@ class ARPSpoofer:
         interface: str,
         gateway_ip: str,
         gateway_mac: str,
-        local_mac: str
+        local_mac: str,
+        *,
+        local_ip: str | None = None,
+        network_subnet: str | None = None,
     ):
         self.interface = interface
         self.gateway_ip = gateway_ip
         self.gateway_mac = gateway_mac
         self.local_mac = local_mac
+        self.local_ip = local_ip
+        self.network = (
+            ipaddress.IPv4Network(network_subnet, strict=True)
+            if network_subnet
+            else None
+        )
 
         self._targets: Dict[str, SpoofTarget] = {}  # MAC -> SpoofTarget
         self._spoof_task: Optional[asyncio.Task] = None
         self._running = False
+        self._original_forwarding: Optional[bool] = None
         self._spoof_interval = 2  # seconds between ARP packets
 
     @property
     def active_targets(self) -> Set[str]:
         """Get set of MAC addresses being spoofed."""
         return set(self._targets.keys())
+
+    def validate_target(self, ip: str, mac: str) -> None:
+        address = ipaddress.IPv4Address(ip)
+        normalized_mac = normalize_mac(mac)
+        protected = {normalize_mac(value) for value in (self.gateway_mac, self.local_mac) if value}
+        if (
+            normalized_mac in protected
+            or str(address) == self.gateway_ip
+            or (self.local_ip is not None and str(address) == self.local_ip)
+        ):
+            raise ValueError("Gateway and appliance cannot be interception targets")
+        if self.network is not None and (
+            address not in self.network
+            or address in {self.network.network_address, self.network.broadcast_address}
+        ):
+            raise ValueError("Interception target must be a host in the selected subnet")
+        if address.is_multicast or address.is_loopback or address.is_unspecified or address.is_reserved:
+            raise ValueError("Interception requires a unicast device address")
+        if int(normalized_mac[:2], 16) & 1 or normalized_mac == "00:00:00:00:00:00":
+            raise ValueError("Interception requires a unicast device MAC")
 
     def add_target(self, ip: str, mac: str) -> bool:
         """
@@ -65,6 +96,7 @@ class ARPSpoofer:
         Returns:
             True if added successfully
         """
+        self.validate_target(ip, mac)
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac in self._targets:
@@ -80,8 +112,10 @@ class ARPSpoofer:
         self._targets[normalized_mac] = target
         logger.info(f"Added spoofing target: {ip} ({normalized_mac})")
 
-        # Send initial spoof packets
-        self._send_spoof_packets(target)
+        # Targets may be staged while enforcement is prepared. Interception
+        # begins only after start() has enabled forwarding.
+        if self._running:
+            self._send_spoof_packets(target)
 
         return True
 
@@ -174,9 +208,9 @@ class ARPSpoofer:
             return
 
         # Enable IP forwarding so traffic passes through
+        self._original_forwarding = get_ip_forwarding_status()
         if not enable_ip_forwarding():
-            logger.error("Failed to enable IP forwarding")
-            return
+            raise RuntimeError("Failed to enable IP forwarding")
 
         self._running = True
 
@@ -208,13 +242,17 @@ class ARPSpoofer:
 
         self._targets.clear()
 
-        # Optionally disable IP forwarding
-        # disable_ip_forwarding()
+        if self._original_forwarding is not None:
+            restore = enable_ip_forwarding if self._original_forwarding else disable_ip_forwarding
+            if not restore():
+                raise RuntimeError("Failed to restore original IP forwarding state")
+            self._original_forwarding = None
 
         logger.info("ARP spoofer stopped, all ARP tables restored")
 
     async def update_target_ip(self, mac: str, new_ip: str):
         """Update IP address for a target (e.g., after DHCP renewal)."""
+        self.validate_target(new_ip, mac)
         normalized_mac = normalize_mac(mac)
 
         if normalized_mac in self._targets:

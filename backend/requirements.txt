@@ -9,6 +9,7 @@ aiosqlite>=0.19.0
 
 # Network Operations
 scapy>=2.5.0
+NetfilterQueue>=1.1.0,<2; sys_platform == "linux"
 
 # Data Validation
 pydantic>=2.5.0
@@ -19,3 +20,4 @@ bcrypt>=4.1.0
 # Utilities
 python-multipart>=0.0.6
 httpx>=0.25.0
+python-dotenv>=1.0,<2

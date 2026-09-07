@@ -5,6 +5,18 @@
 const API_BASE = '/api'
 
 // Types
+export type EnforcementState = 'pending' | 'applied' | 'error' | 'inactive'
+
+export interface EnforcementStatus {
+  state: EnforcementState
+  last_error: string | null
+  updated_at: string
+}
+
+export interface DeviceEnforcement extends EnforcementStatus {
+  components: Record<'interception' | 'blocking' | 'content' | 'bandwidth', EnforcementStatus>
+}
+
 export interface Device {
   id: number
   mac_address: string
@@ -17,6 +29,7 @@ export interface Device {
   first_seen: string | null
   last_seen: string | null
   is_online: boolean
+  enforcement: DeviceEnforcement
 }
 
 export interface Rule {
@@ -26,6 +39,8 @@ export interface Rule {
   rule_value: Record<string, unknown>
   is_active: boolean
   created_at: string | null
+  validation_error: string | null
+  enforcement: EnforcementStatus
 }
 
 export interface SystemStats {
@@ -35,6 +50,9 @@ export interface SystemStats {
   blocked_devices: number
   dns_queries_captured: number
   tls_connections_captured: number
+  event_pipeline?: Record<string, number> | null
+  bandwidth_pipeline?: Record<string, number> | null
+  reconciliation_pipeline?: Record<string, number> | null
 }
 
 export interface BandwidthStats {
@@ -53,55 +71,102 @@ export interface AccessLog {
   domain: string
   action: 'allowed' | 'blocked'
   app_name: string | null
+  rule_id: number | null
+  protocol: string | null
+  reason: string | null
 }
 
 export interface AvailableApp {
   name: string
+  display_name: string
   domains: string[]
 }
 
-// Auth helpers
-let authCredentials: string | null = null
-
-export function setAuthCredentials(username: string, password: string) {
-  authCredentials = btoa(`${username}:${password}`)
+export interface SessionInfo { username: string; csrf_token: string; expires_at: string }
+let csrfToken: string | null = null
+const expiredListeners = new Set<() => void>()
+export function setSessionCsrf(token: string | null) { csrfToken = token }
+export function invalidateSession() {
+  csrfToken = null
+  expiredListeners.forEach(listener => listener())
 }
-
-export function clearAuthCredentials() {
-  authCredentials = null
+export function onSessionExpired(listener: () => void) {
+  expiredListeners.add(listener)
+  return () => { expiredListeners.delete(listener) }
+}
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string,
+    public enforcement?: Partial<DeviceEnforcement>,
+  ) { super(message) }
 }
 
 // API request helper
 async function apiRequest<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  notifyUnauthorized = true
 ): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   }
 
-  if (authCredentials) {
-    headers['Authorization'] = `Basic ${authCredentials}`
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(options.method || 'GET')) {
+    headers['X-CSRF-Token'] = csrfToken
   }
 
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
+    credentials: 'same-origin',
   })
 
   if (response.status === 401) {
-    clearAuthCredentials()
-    window.location.href = '/login'
-    throw new Error('Unauthorized')
+    if (notifyUnauthorized) invalidateSession()
+    throw new ApiError(401, 'Invalid credentials or expired session')
   }
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new Error(error.detail || `HTTP ${response.status}`)
+    const error: unknown = await response.json().catch(() => ({ detail: 'Unknown error' }))
+    const detail = error && typeof error === 'object' && 'detail' in error
+      ? (error as { detail: unknown }).detail
+      : 'Unknown error'
+    if (detail && typeof detail === 'object') {
+      const structured = detail as {
+        code?: unknown
+        enforcement?: { last_error?: unknown }
+      }
+      const code = typeof structured.code === 'string' ? structured.code : undefined
+      const message = typeof structured.enforcement?.last_error === 'string'
+        ? structured.enforcement.last_error
+        : code || `Request failed (${response.status})`
+      throw new ApiError(
+        response.status,
+        message,
+        code,
+        structured.enforcement as Partial<DeviceEnforcement> | undefined,
+      )
+    }
+    throw new ApiError(
+      response.status,
+      typeof detail === 'string' ? detail : `Request failed (${response.status})`,
+    )
   }
 
-  return response.json()
+  return response.status === 204 ? undefined as T : response.json()
+}
+
+export function getSession(signal?: AbortSignal): Promise<SessionInfo> {
+  return apiRequest('/auth/session', { signal }, false)
+}
+export function loginSession(username: string, password: string): Promise<SessionInfo> {
+  return apiRequest('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }, false)
+}
+export function logoutSession(): Promise<void> {
+  return apiRequest('/auth/logout', { method: 'POST' })
 }
 
 // Device APIs
@@ -239,11 +304,12 @@ export async function getNetworkInfo(): Promise<{
   return apiRequest('/settings/network/info')
 }
 
-export async function changePassword(newPassword: string): Promise<void> {
-  return apiRequest('/settings/password', {
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await apiRequest('/settings/password', {
     method: 'POST',
-    body: JSON.stringify({ new_password: newPassword }),
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   })
+  invalidateSession()
 }
 
 // Health check

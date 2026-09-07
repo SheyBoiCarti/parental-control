@@ -27,6 +27,9 @@ class AccessLogEntry(BaseModel):
     domain: str
     action: str
     app_name: Optional[str]
+    rule_id: Optional[int]
+    protocol: Optional[str]
+    reason: Optional[str]
 
 
 class AccessStatsResponse(BaseModel):
@@ -45,6 +48,9 @@ class SystemStatsResponse(BaseModel):
     blocked_devices: int
     dns_queries_captured: int
     tls_connections_captured: int
+    event_pipeline: Optional[dict] = None
+    bandwidth_pipeline: Optional[dict] = None
+    reconciliation_pipeline: Optional[dict] = None
 
 
 # App state reference
@@ -96,7 +102,18 @@ async def get_system_stats(user: str = Depends(get_current_user)):
         monitored_devices=monitored_devices,
         blocked_devices=blocked_devices,
         dns_queries_captured=analyzer_stats.get("dns_queries", 0),
-        tls_connections_captured=analyzer_stats.get("tls_connections", 0)
+        tls_connections_captured=analyzer_stats.get("tls_connections", 0),
+        event_pipeline=state.event_worker.stats() if getattr(state, "event_worker", None) else None,
+        bandwidth_pipeline=(
+            state.bandwidth_monitor.stats()
+            if getattr(state, "bandwidth_monitor", None)
+            else None
+        ),
+        reconciliation_pipeline=(
+            state.reconciliation_worker.stats()
+            if getattr(state, "reconciliation_worker", None)
+            else None
+        ),
     )
 
 
@@ -238,7 +255,10 @@ async def get_device_access_stats(
                 timestamp=log.timestamp.isoformat(),
                 domain=log.domain,
                 action=log.action,
-                app_name=log.app_name
+                app_name=log.app_name,
+                rule_id=log.rule_id,
+                protocol=log.protocol,
+                reason=log.reason,
             )
             for log in logs
         ]

@@ -58,6 +58,14 @@ export default function DeviceList({
     <div className="space-y-3">
       {devices.map((device) => {
         const Icon = getDeviceIcon(device)
+        const blockingState = device.enforcement?.components.blocking.state ?? 'pending'
+        const monitoringState = device.enforcement?.components.interception.state ?? 'pending'
+        const blockingLabel = blockingState === 'applied'
+          ? 'Blocked'
+          : blockingState === 'error' ? 'Block failed' : 'Block pending'
+        const monitoringLabel = monitoringState === 'applied'
+          ? 'Monitoring active'
+          : monitoringState === 'error' ? 'Monitoring failed' : 'Monitoring pending'
 
         return (
           <div
@@ -109,14 +117,14 @@ export default function DeviceList({
                   </span>
 
                   {device.is_blocked && (
-                    <span className="badge badge-blocked">
-                      <Shield size={12} className="mr-1" /> Blocked
+                    <span className={`badge ${blockingState === 'applied' ? 'badge-blocked' : 'badge-offline'}`}>
+                      <Shield size={12} className="mr-1" /> {blockingLabel}
                     </span>
                   )}
 
                   {device.is_monitored && (
                     <span className="badge badge-monitored">
-                      <Eye size={12} className="mr-1" /> Monitored
+                      <Eye size={12} className="mr-1" /> {monitoringLabel}
                     </span>
                   )}
                 </div>
@@ -138,7 +146,6 @@ export default function DeviceList({
                   onClick={() => onMonitor(device.mac_address)}
                   className="btn btn-secondary flex items-center space-x-1"
                   title="Start monitoring"
-                  disabled={!device.is_online}
                 >
                   <Eye size={16} />
                   <span className="hidden sm:inline">Monitor</span>

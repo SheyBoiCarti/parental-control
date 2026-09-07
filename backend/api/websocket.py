@@ -1,170 +1,164 @@
-"""WebSocket manager for real-time updates."""
+"""Authenticated, bounded WebSocket telemetry delivery."""
 
 import asyncio
 import json
-import logging
-from typing import Dict, List, Set, Any
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy.exc import SQLAlchemyError
 
-logger = logging.getLogger(__name__)
+from api.auth import COOKIE_NAME, check_origin
+from core.auth_service import AuthenticationError, AuthUnavailable
 
 
 @dataclass
 class WSMessage:
-    """WebSocket message structure."""
     type: str
     data: Any
-    timestamp: str = None
+    timestamp: str | None = None
 
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.utcnow().isoformat()
+            self.timestamp = datetime.now(timezone.utc).isoformat()
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
 
 
+@dataclass
+class Client:
+    socket: WebSocket
+    session_id: str
+    queue: asyncio.Queue
+    verify: Any
+    sender: asyncio.Task | None = None
+
+
 class ConnectionManager:
-    """Manages WebSocket connections and broadcasts."""
+    def __init__(self, *, queue_capacity=100, send_timeout=5.0):
+        self.clients = {}
+        self.queue_capacity = queue_capacity
+        self.send_timeout = send_timeout
 
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-        self._lock = asyncio.Lock()
+    @property
+    def active_connections(self):
+        return list(self.clients)
 
-    async def connect(self, websocket: WebSocket):
-        """Accept a new WebSocket connection."""
+    async def connect(self, websocket, identity, verify):
         await websocket.accept()
-        async with self._lock:
-            self.active_connections.append(websocket)
-        logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
+        client = Client(websocket, identity.session_id, asyncio.Queue(self.queue_capacity), verify)
+        self.clients[websocket] = client
+        client.sender = asyncio.create_task(self._send(client))
 
-    async def disconnect(self, websocket: WebSocket):
-        """Remove a WebSocket connection."""
-        async with self._lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
-        logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
-
-    async def send_personal(self, message: WSMessage, websocket: WebSocket):
-        """Send message to a specific connection."""
+    async def _send(self, client):
         try:
-            await websocket.send_text(message.to_json())
-        except Exception as e:
-            logger.error(f"Failed to send personal message: {e}")
+            while True:
+                message = await client.queue.get()
+                await client.verify()
+                await asyncio.wait_for(client.socket.send_text(message.to_json()), self.send_timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self.disconnect(client.socket, code=1008)
 
-    async def broadcast(self, message: WSMessage):
-        """Broadcast message to all connected clients."""
-        if not self.active_connections:
+    async def disconnect(self, websocket, *, code=1000):
+        client = self.clients.pop(websocket, None)
+        if client is None:
             return
+        if client.sender is not None and client.sender is not asyncio.current_task():
+            client.sender.cancel()
+            await asyncio.gather(client.sender, return_exceptions=True)
+        try:
+            await asyncio.wait_for(websocket.close(code=code), 1.0)
+        except (Exception, asyncio.CancelledError):
+            pass
 
-        async with self._lock:
-            connections = self.active_connections.copy()
-
-        disconnected = []
-
-        for connection in connections:
-            try:
-                await connection.send_text(message.to_json())
-            except Exception as e:
-                logger.debug(f"Failed to send to connection: {e}")
-                disconnected.append(connection)
-
-        # Clean up disconnected clients
-        for conn in disconnected:
-            await self.disconnect(conn)
-
-    async def broadcast_device_update(self, device_data: dict):
-        """Broadcast device status update."""
-        await self.broadcast(WSMessage(
-            type="device_update",
-            data=device_data
+    async def close_sessions(self, digest):
+        await asyncio.gather(*(
+            self.disconnect(client.socket, code=1008)
+            for client in list(self.clients.values())
+            if digest is None or client.session_id == digest
         ))
 
-    async def broadcast_devices_list(self, devices: List[dict]):
-        """Broadcast full device list."""
-        await self.broadcast(WSMessage(
-            type="devices_list",
-            data=devices
-        ))
+    async def send_personal(self, message, websocket):
+        client = self.clients.get(websocket)
+        if client is None:
+            return
+        try:
+            client.queue.put_nowait(message)
+        except asyncio.QueueFull:
+            await self.disconnect(websocket, code=1013)
 
-    async def broadcast_rule_update(self, rule_data: dict):
-        """Broadcast rule change."""
-        await self.broadcast(WSMessage(
-            type="rule_update",
-            data=rule_data
-        ))
+    async def broadcast(self, message):
+        await asyncio.gather(*(self.send_personal(message, socket) for socket in list(self.clients)))
 
-    async def broadcast_access_log(self, log_data: dict):
-        """Broadcast access log entry."""
-        await self.broadcast(WSMessage(
-            type="access_log",
-            data=log_data
-        ))
+    async def broadcast_device_update(self, data):
+        await self.broadcast(WSMessage("device_update", data))
 
-    async def broadcast_bandwidth_stats(self, stats: dict):
-        """Broadcast bandwidth statistics."""
-        await self.broadcast(WSMessage(
-            type="bandwidth_stats",
-            data=stats
-        ))
+    async def broadcast_devices_list(self, data):
+        await self.broadcast(WSMessage("devices_list", data))
 
-    async def broadcast_system_status(self, status: dict):
-        """Broadcast system status update."""
-        await self.broadcast(WSMessage(
-            type="system_status",
-            data=status
-        ))
+    async def broadcast_rule_update(self, data):
+        await self.broadcast(WSMessage("rule_update", data))
+
+    async def broadcast_access_log(self, data):
+        await self.broadcast(WSMessage("access_log", data))
+
+    async def broadcast_bandwidth_stats(self, data):
+        await self.broadcast(WSMessage("bandwidth_stats", data))
+
+    async def broadcast_system_status(self, data):
+        await self.broadcast(WSMessage("system_status", data))
 
 
-# Global connection manager instance
 ws_manager = ConnectionManager()
 
 
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint handler."""
-    await ws_manager.connect(websocket)
-
+    manager = websocket.app.state.ws_manager
+    service = websocket.app.state.auth_service
     try:
-        while True:
-            # Receive and handle messages from client
-            data = await websocket.receive_text()
+        check_origin(websocket, required=True)
+        if service is None:
+            raise AuthUnavailable()
+        token = websocket.cookies.get(COOKIE_NAME, "")
 
+        async def verify():
+            return await service.validate_session(token)
+
+        # Hold the same lock as logout/rotation through registration so a
+        # revocation cannot slip between validation and tracking the socket.
+        async with service._mutation_lock:
+            identity = await verify()
+            await manager.connect(websocket, identity, verify)
+        while websocket in manager.clients:
+            await verify()
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), 1.0)
+            except asyncio.TimeoutError:
+                continue
+            if len(data) > 4096:
+                break
             try:
                 message = json.loads(data)
-                await handle_client_message(websocket, message)
             except json.JSONDecodeError:
-                await ws_manager.send_personal(
-                    WSMessage(type="error", data="Invalid JSON"),
-                    websocket
-                )
-
-    except WebSocketDisconnect:
-        await ws_manager.disconnect(websocket)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        await ws_manager.disconnect(websocket)
-
-
-async def handle_client_message(websocket: WebSocket, message: dict):
-    """Handle incoming WebSocket messages from clients."""
-    msg_type = message.get("type")
-
-    if msg_type == "ping":
-        await ws_manager.send_personal(
-            WSMessage(type="pong", data=None),
-            websocket
-        )
-
-    elif msg_type == "subscribe":
-        # Client wants to subscribe to specific event types
-        # For now, all clients receive all broadcasts
-        await ws_manager.send_personal(
-            WSMessage(type="subscribed", data=message.get("events", [])),
-            websocket
-        )
-
-    else:
-        logger.debug(f"Unknown message type: {msg_type}")
+                await manager.send_personal(WSMessage("error", "Invalid JSON"), websocket)
+                continue
+            if not isinstance(message, dict):
+                continue
+            if message.get("type") == "ping":
+                await manager.send_personal(WSMessage("pong", None), websocket)
+            elif message.get("type") == "subscribe":
+                await manager.send_personal(WSMessage("subscribed", message.get("events", [])), websocket)
+    except (AuthenticationError, HTTPException):
+        if websocket not in manager.clients:
+            await websocket.close(code=1008)
+    except (AuthUnavailable, SQLAlchemyError):
+        if websocket not in manager.clients:
+            await websocket.close(code=1013)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        await manager.disconnect(websocket, code=1008)

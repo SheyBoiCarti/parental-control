@@ -19,8 +19,8 @@ A Linux-based network management tool for parental control that provides device 
 
 - Linux (Ubuntu/Debian or Raspberry Pi OS recommended)
 - Root/sudo access
-- Python 3.11+
-- Node.js 18+ (for frontend development)
+- Python 3.11 or 3.12
+- Node.js 22 and npm (for building the dashboard)
 
 ### Hardware Recommendations
 
@@ -43,7 +43,7 @@ sudo ./scripts/install.sh
 1. Install system dependencies:
 ```bash
 sudo apt update
-sudo apt install python3 python3-pip python3-venv libpcap-dev iptables iproute2
+sudo apt install python3 python3-pip python3-venv python3-dev build-essential libpcap-dev libnetfilter-queue-dev iptables iproute2
 ```
 
 2. Create Python virtual environment:
@@ -51,15 +51,24 @@ sudo apt install python3 python3-pip python3-venv libpcap-dev iptables iproute2
 cd backend
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt
+cd ..
 ```
 
-3. Build frontend (optional):
+3. Build and install the dashboard:
 ```bash
 cd frontend
-npm install
+npm ci
 npm run build
+mkdir -p ../backend/static
+cp -r dist/. ../backend/static/
+cd ..
 ```
+
+The backend serves `backend/static` independently of the working directory. Set
+`STATIC_DIR` in the environment file to override it. For intentional API-only
+development, set `API_ONLY=true`; dashboard routes then return 404. Missing
+assets in dashboard mode return 503 with installation instructions.
 
 4. Configure the application:
 ```bash
@@ -81,10 +90,10 @@ Edit `backend/.env` to configure:
 NETWORK_INTERFACE=eth0
 
 # API server settings
-API_HOST=0.0.0.0
+API_HOST=127.0.0.1
 API_PORT=8080
 
-# Authentication (optional)
+# Authentication is required; saved credentials take precedence over bootstrap settings
 AUTH_USERNAME=admin
 AUTH_PASSWORD_HASH=  # bcrypt hash
 
@@ -94,13 +103,20 @@ LOG_LEVEL=INFO
 
 ### Setting a Password
 
-Generate a bcrypt password hash:
+Set the local administrator password using hidden input:
 
 ```bash
-python3 -c "import bcrypt; print(bcrypt.hashpw(b'your_password', bcrypt.gensalt()).decode())"
+sudo ./backend/venv/bin/python backend/main.py --env-file backend/.env --reset-password
 ```
 
-Add the output to `AUTH_PASSWORD_HASH` in `.env`.
+Saved credentials survive restarts and installer reruns. Run this command again
+only when you intend to reset them. Browser password changes revoke existing sessions.
+
+For remote browser access, configure `API_HOST`, `HTTPS_CERT_FILE`,
+`HTTPS_KEY_FILE`, and `ALLOWED_ORIGINS` with your exact HTTPS dashboard origin.
+For local HTTP development only, explicitly set `ALLOW_INSECURE_DEVELOPMENT=true`
+and `ALLOWED_ORIGINS=http://127.0.0.1:8080`. An empty origin list does not allow
+browser login. Keep `backend/.env` readable only by the service owner (`chmod 600`).
 
 ## Usage
 
@@ -108,7 +124,7 @@ Add the output to `AUTH_PASSWORD_HASH` in `.env`.
 
 ```bash
 # Manual start
-sudo python3 backend/main.py -i eth0
+sudo ./backend/venv/bin/python backend/main.py --env-file backend/.env -i eth0
 
 # Using systemd
 sudo systemctl start parental-control
@@ -117,9 +133,9 @@ sudo systemctl enable parental-control  # Start on boot
 
 ### Accessing the Dashboard
 
-Open `http://<server-ip>:8080` in your browser.
-
-Default credentials: `admin` / (no password)
+Open the HTTPS dashboard origin configured in `ALLOWED_ORIGINS`, or the loopback
+HTTP URL after explicitly configuring local development. Log in as the configured
+username (default `admin`) with the password you set. There is no passwordless login.
 
 ### API Endpoints
 
@@ -149,6 +165,7 @@ Default credentials: `admin` / (no password)
 │  • Device Manager - ARP scanning, MAC tracking              │
 │  • ARP Spoofer - MITM positioning via Scapy                 │
 │  • Packet Analyzer - DNS/SNI inspection                     │
+│  • Inline Enforcer - DNS/TLS verdicts and QUIC fallback     │
 │  • Traffic Controller - Bandwidth limits via tc             │
 │  • Content Blocker - App/domain blocking                    │
 │  • Device Blocker - iptables MAC filtering                  │
@@ -189,13 +206,34 @@ Default credentials: `admin` / (no password)
 
 ## Limitations
 
-- **Encrypted DNS (DoH/DoT)**: Can bypass DNS-based blocking
-  - Mitigation: Block known DoH provider IPs
-- **VPNs**: Bypass all blocking when active
-  - Mitigation: Can detect and block VPN protocols
-- **HTTPS**: Cannot inspect encrypted content
-  - Note: SNI inspection works without decryption
-- **Static IP devices**: May need manual IP updates
+- Enforcement covers forwarded IPv4 devices that the appliance can intercept on the selected LAN. IPv6 is not filtered.
+- Plain DNS over UDP/TCP and TLS ClientHello SNI are inspected. Encrypted DNS, encrypted ClientHello, proxies, VPNs and non-TLS protocols can bypass domain/app rules.
+- UDP/443 is dropped for protected devices to encourage TCP/TLS fallback; applications that require QUIC may fail instead of falling back.
+- App signatures are domain lists, not guarantees that every service endpoint is covered. Missing catalog entries remain visible as unresolved rules.
+- DHCP address changes are reconciled after discovery. Until a current address is known, saved enforcement remains pending.
+- Bandwidth byte totals come from Linux `tc` class counters and include the bytes reported by the kernel classifier, including network headers counted by `tc`.
+
+## Verification
+
+Portable checks never invoke host firewall, traffic-control, ARP or packet-capture commands:
+
+```bash
+python -m pytest backend/tests -q
+cd frontend
+npm ci
+npm run lint
+npm run test -- --run
+npm run build
+```
+
+The supported portable matrix is Python 3.11/3.12 and Node 22. CI currently runs on Ubuntu 24.04. The separate kernel job uses `unshare --net` and refuses to run when its network namespace matches PID 1:
+
+```bash
+sudo --preserve-env=PATH,GITHUB_WORKSPACE \
+  unshare --net --mount-proc bash scripts/run-linux-integration.sh
+```
+
+That kernel job proves real `tc`, iptables and NFQUEUE adapter ownership in an ephemeral namespace. It does not represent every Linux distribution or network topology; controlled end-to-end throughput and protocol traffic acceptance remains tracked in [the remediation results](docs/remediation-results.md).
 
 ## Troubleshooting
 
