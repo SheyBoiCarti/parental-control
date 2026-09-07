@@ -30,6 +30,7 @@ class AppState:
     event_worker: Any = None
     reconciler: Any = None
     content_enforcer: Any = None
+    bandwidth_monitor: Any = None
 
 
 def _component_types() -> dict[str, type[Any]]:
@@ -100,6 +101,7 @@ class ParentalControlApp:
         self.state: AppState | None = None
         self.auth_service = None
         self.event_worker = None
+        self.bandwidth_monitor = None
 
     async def initialize_auth(self) -> None:
         from core.auth_service import AuthService
@@ -178,7 +180,10 @@ class ParentalControlApp:
         )
 
     async def start_services(self) -> None:
+        from api.websocket import ws_manager
+        from core.bandwidth_monitor import BandwidthMonitor
         from core.packet_events import EventWorker, persist_events
+        from db.database import get_session
         assert self.state is not None
         self.event_worker = EventWorker(
             persist_events, capacity=self.config.event_queue_capacity,
@@ -200,6 +205,16 @@ class ParentalControlApp:
 
         self.state.device_manager.add_online_callback(on_device_scan)
         await self._start_network_enforcement()
+        self.bandwidth_monitor = BandwidthMonitor(
+            self.state.traffic_controller,
+            get_session,
+            ws_manager.broadcast_bandwidth_stats,
+            interval_seconds=self.config.accounting_interval_seconds,
+            retention_days=self.config.telemetry_retention_days,
+            prune_interval_seconds=self.config.retention_prune_interval_seconds,
+        )
+        await self.bandwidth_monitor.start()
+        self.state.bandwidth_monitor = self.bandwidth_monitor
         await self.state.device_manager.start_periodic_scan(self.config.device_scan_interval)
 
     async def _start_network_enforcement(self) -> None:
@@ -222,6 +237,8 @@ class ParentalControlApp:
                 self.state.arp_spoofer.stop,
                 self.state.packet_analyzer.stop,
             ])
+            if getattr(self.state, "bandwidth_monitor", None) is not None:
+                cleanup.append(self.state.bandwidth_monitor.stop)
             if getattr(self.state, "content_enforcer", None) is not None:
                 cleanup.append(self.state.content_enforcer.shutdown)
             cleanup.extend([

@@ -232,42 +232,47 @@ class TrafficController:
         """Get all bandwidth limits."""
         return self._limits.copy()
 
+    async def read_bandwidth_counters(self) -> Dict[str, Dict[str, int | str]]:
+        """Read byte totals for this instance's owned directional classes."""
+        result = await self._runner.run([
+            "tc", "-j", "-s", "class", "show", "dev", self.interface,
+        ])
+        try:
+            inventory = json.loads(result.stdout)
+            if not isinstance(inventory, list):
+                raise ValueError
+            by_handle = {}
+            for item in inventory:
+                if not isinstance(item, dict):
+                    raise ValueError
+                handle = item.get("handle") or item.get("classid")
+                stats = item.get("stats")
+                if not isinstance(handle, str) or not isinstance(stats, dict):
+                    continue
+                byte_count = stats.get("bytes")
+                if type(byte_count) is not int or byte_count < 0:
+                    raise ValueError
+                by_handle[handle.lower()] = byte_count
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("Cannot read traffic accounting counters") from error
+
+        counters: Dict[str, Dict[str, int | str]] = {}
+        for mac, limit in self._limits.items():
+            upload_handle = f"1:{limit.class_id:x}"
+            download_handle = f"1:{limit.class_id + 1:x}"
+            if upload_handle not in by_handle or download_handle not in by_handle:
+                raise RuntimeError(f"Owned traffic counters are missing for {mac}")
+            counters[mac] = {
+                "ip_address": limit.ip_address or "",
+                "class_id": limit.class_id,
+                "bytes_sent": by_handle[upload_handle],
+                "bytes_received": by_handle[download_handle],
+            }
+        return counters
+
     async def shutdown(self):
         """Clean up all tc configuration."""
         logger.info("Shutting down traffic controller")
         await self._cleanup()
         self._limits.clear()
         self._initialized = False
-
-
-class BandwidthMonitor:
-    """Monitor bandwidth usage per device."""
-
-    def __init__(self, interface: str):
-        self.interface = interface
-        self._usage: Dict[str, Dict[str, int]] = {}  # MAC -> {bytes_sent, bytes_recv}
-
-    async def get_device_usage(self, mac: str) -> Dict[str, int]:
-        """
-        Get bandwidth usage for a device.
-
-        Note: This is a simplified implementation. For accurate per-device
-        bandwidth monitoring, you'd use iptables accounting rules or
-        parse /proc/net/xt_quota/*.
-        """
-        normalized_mac = normalize_mac(mac)
-
-        if normalized_mac not in self._usage:
-            self._usage[normalized_mac] = {"bytes_sent": 0, "bytes_received": 0}
-
-        return self._usage[normalized_mac]
-
-    async def update_usage(self, mac: str, bytes_sent: int, bytes_received: int):
-        """Update usage counters for a device."""
-        normalized_mac = normalize_mac(mac)
-
-        if normalized_mac not in self._usage:
-            self._usage[normalized_mac] = {"bytes_sent": 0, "bytes_received": 0}
-
-        self._usage[normalized_mac]["bytes_sent"] += bytes_sent
-        self._usage[normalized_mac]["bytes_received"] += bytes_received

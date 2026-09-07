@@ -50,6 +50,8 @@ export interface SystemStats {
   blocked_devices: number
   dns_queries_captured: number
   tls_connections_captured: number
+  event_pipeline?: Record<string, number> | null
+  bandwidth_pipeline?: Record<string, number> | null
 }
 
 export interface BandwidthStats {
