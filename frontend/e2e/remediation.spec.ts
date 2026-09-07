@@ -78,3 +78,28 @@ test('keeps the rejected rule input visible with the current apply failure', asy
   await page.getByRole('button', { name: 'Block Domains' }).click()
   await expect(page.getByText('Failed to apply', { exact: true })).toBeVisible()
 })
+
+test('changes password in settings, invalidates previous session, and rejects old credentials', async ({ page }) => {
+  const initialPassword = testPassword()
+  const newPassword = `${initialPassword}-rotated`
+  await login(page, initialPassword)
+  await page.goto('/settings')
+  await page.getByPlaceholder('Enter current password').fill(initialPassword)
+  await page.getByPlaceholder('Enter new password').fill(newPassword)
+  await page.getByPlaceholder('Confirm new password').fill(newPassword)
+  await page.getByRole('button', { name: 'Change Password' }).click()
+
+  // After password change, session is invalidated and user is redirected to login
+  await expect(page.getByRole('button', { name: 'Sign In' })).toBeVisible()
+
+  // Old password must fail
+  await page.getByLabel('Username').fill('e2e-admin')
+  await page.getByLabel('Password').fill(initialPassword)
+  await page.getByRole('button', { name: 'Sign In' }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+
+  // New password must succeed
+  await page.getByLabel('Password').fill(newPassword)
+  await page.getByRole('button', { name: 'Sign In' }).click()
+  await expect(page.getByRole('link', { name: 'Dashboard' })).toBeVisible()
+})

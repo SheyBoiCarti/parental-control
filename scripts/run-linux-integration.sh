@@ -27,5 +27,16 @@ ip link set lo up
 ip link add pcdummy0 type dummy
 ip link set pcdummy0 up
 
-python -m pytest backend/tests/linux -q \
+python_bin="${PYTHON:-}"
+if [[ -z "$python_bin" ]]; then
+  if command -v python >/dev/null 2>&1; then
+    python_bin="python"
+  elif [[ -x "backend/venv/bin/python" ]]; then
+    python_bin="backend/venv/bin/python"
+  else
+    python_bin="python3"
+  fi
+fi
+
+"$python_bin" -m pytest backend/tests/linux -q \
   --junitxml="$artifact_dir/junit.xml"

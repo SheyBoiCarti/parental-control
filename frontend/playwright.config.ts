@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@playwright/test'
 
@@ -8,7 +8,25 @@ const passwordFile = fileURLToPath(new URL('./test-results/.e2e-password', impor
 const stateDirectory = fileURLToPath(new URL('./test-results/.e2e-runtime', import.meta.url))
 mkdirSync(dirname(passwordFile), { recursive: true })
 const e2ePassword = `pc-e2e-${randomBytes(18).toString('base64url')}`
-const python = process.platform === 'win32' ? '..\\backend\\.venv\\Scripts\\python.exe' : 'python3'
+
+function findPython(): string {
+  if (process.env.PYTHON) return process.env.PYTHON
+  const candidates = process.platform === 'win32'
+    ? [
+        resolve(fileURLToPath(new URL('../backend/.venv/Scripts/python.exe', import.meta.url))),
+        resolve(fileURLToPath(new URL('../backend/venv/Scripts/python.exe', import.meta.url))),
+      ]
+    : [
+        resolve(fileURLToPath(new URL('../backend/venv/bin/python', import.meta.url))),
+        resolve(fileURLToPath(new URL('../backend/.venv/bin/python', import.meta.url))),
+      ]
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate
+  }
+  return process.platform === 'win32' ? '..\\backend\\.venv\\Scripts\\python.exe' : 'python3'
+}
+
+const python = findPython()
 
 export default defineConfig({
   testDir: './e2e',
