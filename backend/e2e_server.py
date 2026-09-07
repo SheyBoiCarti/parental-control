@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 from pathlib import Path
+import shutil
 import sys
-import tempfile
 
 import uvicorn
 from sqlalchemy import select
@@ -205,12 +205,31 @@ async def build_app(data_dir: Path):
 
 async def serve() -> None:
     password_file = os.environ.get("PC_E2E_PASSWORD_FILE")
+    data_dir = os.environ.get("PC_E2E_DATA_DIR")
+    if not data_dir:
+        raise RuntimeError("PC_E2E_DATA_DIR is required for the Playwright fixture")
+    fixture_data = Path(data_dir)
+    if fixture_data.name != ".e2e-runtime" or fixture_data.parent.name != "test-results":
+        raise RuntimeError("PC_E2E_DATA_DIR must be the Playwright test-results/.e2e-runtime fixture")
     try:
-        with tempfile.TemporaryDirectory(prefix="parental-control-e2e-") as temporary:
-            app = await build_app(Path(temporary))
-            server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=4173, log_level="warning"))
-            await server.serve()
+        # This path is created exclusively by Playwright under test-results.
+        # Its parent-owned global teardown removes it even when Windows force-kills us.
+        shutil.rmtree(fixture_data, ignore_errors=True)
+        fixture_data.mkdir(parents=True, exist_ok=False)
+        app = await build_app(fixture_data)
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=4173, log_level="warning"))
+
+        async def shutdown():
+            server.should_exit = True
+            return {"status": "stopping"}
+
+        app.add_api_route("/__e2e/shutdown", shutdown, methods=["POST"], include_in_schema=False)
+        app.router.routes.insert(0, app.router.routes.pop())
+        await server.serve()
     finally:
+        from db.database import close_db
+        await close_db()
+        shutil.rmtree(fixture_data, ignore_errors=True)
         if password_file:
             Path(password_file).unlink(missing_ok=True)
 

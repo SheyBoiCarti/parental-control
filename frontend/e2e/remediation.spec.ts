@@ -16,14 +16,34 @@ function testPassword(): string {
 
 test('serves the production dashboard and authenticates the seeded administrator', async ({ page }) => {
   const password = testPassword()
+  const encodedPassword = Buffer.from(password).toString('base64')
+  const legacyBasic = `Basic ${Buffer.from(`e2e-admin:${password}`).toString('base64')}`
+  const requestUrls: string[] = []
+  const requestAuthorization: string[] = []
+  page.on('request', (request) => {
+    requestUrls.push(request.url())
+    requestAuthorization.push(request.headers().authorization || '')
+  })
   await login(page, password)
+  const markers = [password, encodedPassword, legacyBasic]
+  const assertNoCredentialLeak = async () => {
+    const storage = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }))
+    const serializedStorage = JSON.stringify(storage)
+    for (const marker of markers) {
+      expect(serializedStorage).not.toContain(marker)
+      expect(page.url()).not.toContain(marker)
+      expect(requestUrls.join('\n')).not.toContain(marker)
+      expect(requestAuthorization.join('\n')).not.toContain(marker)
+    }
+    expect(requestAuthorization.some((header) => header.toLowerCase().startsWith('basic '))).toBe(false)
+  }
+  await assertNoCredentialLeak()
+
+  await page.evaluate((value) => localStorage.setItem('auth', value), legacyBasic)
   await page.reload()
   await expect(page.getByRole('link', { name: 'Dashboard' })).toBeVisible()
   await expect(page).toHaveURL('http://127.0.0.1:4173/')
-
-  const storage = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }))
-  expect(JSON.stringify(storage)).not.toContain(password)
-  expect(page.url()).not.toContain(password)
+  await assertNoCredentialLeak()
   const cookie = (await page.context().cookies()).find(({ name }) => name === 'pc_session')
   expect(cookie).toMatchObject({ httpOnly: true, sameSite: 'Strict', path: '/' })
 
