@@ -10,7 +10,7 @@ import logging
 import os
 from pathlib import Path
 import sys
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -107,14 +107,47 @@ class ParentalControlApp:
         self.event_worker = None
         self.bandwidth_monitor = None
         self.reconciliation_worker = None
+        self._cleanup_stack: list[tuple[str, Callable[[], Awaitable[Any]]]] = []
+        self._lifecycle_managed = False
+
+    def _register_cleanup(
+        self, name: str, cleanup: Callable[[], Awaitable[Any]]
+    ) -> None:
+        """Record an owned resource only after its acquisition succeeded."""
+        self._lifecycle_managed = True
+        self._cleanup_stack.append((name, cleanup))
+
+    async def _acquire(
+        self,
+        name: str,
+        start: Callable[[], Awaitable[Any]],
+        cleanup: Callable[[], Awaitable[Any]],
+    ) -> None:
+        await start()
+        self._register_cleanup(name, cleanup)
+
+    async def _rollback_startup_failure(self) -> None:
+        """Attempt every registered cleanup while preserving the startup error."""
+        try:
+            await self.stop_services()
+        except BaseException:
+            logging.getLogger(__name__).exception(
+                "Cleanup after service startup failure was incomplete"
+            )
 
     async def initialize_auth(self) -> None:
         from core.auth_service import AuthService
-        from db.database import configure_database, init_db, get_session
-        configure_database(self.config)
-        await init_db()
-        self.auth_service = AuthService(get_session)
-        await self.auth_service.ensure_configured()
+        from db.database import close_db, configure_database, init_db, get_session
+
+        try:
+            configure_database(self.config)
+            await init_db()
+            self._register_cleanup("database", close_db)
+            self.auth_service = AuthService(get_session)
+            await self.auth_service.ensure_configured()
+        except BaseException:
+            await self._rollback_startup_failure()
+            raise
 
     async def initialize(self) -> None:
         from api.routes import devices, rules, settings, stats
@@ -123,50 +156,58 @@ class ParentalControlApp:
         from core.inline_inspector import InlineInspector
         from core.nfqueue_worker import NFQueueWorker
         from db.database import get_session
-        if self.auth_service is None:
-            await self.initialize_auth()
-        types = _component_types()
-        manager = types["DeviceManager"](
-            interface=self.config.network_interface,
-            gateway_ip=self.config.gateway_ip,
-            network_subnet=self.config.network_subnet,
-        )
-        await manager.initialize()
-        effective_config = self.config.model_copy(
-            update={"gateway_ip": manager.gateway_ip, "network_subnet": manager.subnet}
-        )
-        self.state = build_app_state(
-            effective_config,
-            types,
-            gateway_mac=manager.gateway_mac,
-            local_mac=manager.local_mac,
-            local_ip=manager.local_ip,
-        )
-        self.state.device_manager = manager
-        await self.state.content_blocker.initialize()
-        await self.state.device_blocker.initialize()
-        inspector = InlineInspector(self.state.content_blocker)
-        worker = NFQueueWorker(
-            inspector,
-            lambda event: self.event_worker.submit(event) if self.event_worker else False,
-        )
-        self.state.content_enforcer = ContentEnforcer(
-            effective_config.network_interface,
-            inspector,
-            worker=worker,
-        )
-        self.state.reconciler = EnforcementReconciler(
-            get_session,
-            self.state.arp_spoofer,
-            self.state.device_blocker,
-            self.state.traffic_controller,
-            self.state.content_enforcer,
-        )
-        devices.set_app_state(self.state)
-        rules.set_app_state(self.state)
-        stats.set_app_state(self.state)
-        settings.set_app_state(self.state)
-        self._setup_packet_callbacks()
+        try:
+            if self.auth_service is None:
+                await self.initialize_auth()
+            types = _component_types()
+            manager = types["DeviceManager"](
+                interface=self.config.network_interface,
+                gateway_ip=self.config.gateway_ip,
+                network_subnet=self.config.network_subnet,
+            )
+            await manager.initialize()
+            effective_config = self.config.model_copy(
+                update={"gateway_ip": manager.gateway_ip, "network_subnet": manager.subnet}
+            )
+            self.state = build_app_state(
+                effective_config,
+                types,
+                gateway_mac=manager.gateway_mac,
+                local_mac=manager.local_mac,
+                local_ip=manager.local_ip,
+            )
+            self.state.device_manager = manager
+            await self.state.content_blocker.initialize()
+            await self._acquire(
+                "device blocker",
+                self.state.device_blocker.initialize,
+                self.state.device_blocker.shutdown,
+            )
+            inspector = InlineInspector(self.state.content_blocker)
+            worker = NFQueueWorker(
+                inspector,
+                lambda event: self.event_worker.submit(event) if self.event_worker else False,
+            )
+            self.state.content_enforcer = ContentEnforcer(
+                effective_config.network_interface,
+                inspector,
+                worker=worker,
+            )
+            self.state.reconciler = EnforcementReconciler(
+                get_session,
+                self.state.arp_spoofer,
+                self.state.device_blocker,
+                self.state.traffic_controller,
+                self.state.content_enforcer,
+            )
+            devices.set_app_state(self.state)
+            rules.set_app_state(self.state)
+            stats.set_app_state(self.state)
+            settings.set_app_state(self.state)
+            self._setup_packet_callbacks()
+        except BaseException:
+            await self._rollback_startup_failure()
+            raise
 
     def _setup_packet_callbacks(self) -> None:
         from core.packet_events import AccessEvent
@@ -192,94 +233,150 @@ class ParentalControlApp:
         from core.reconciliation_worker import ReconciliationWorker
         from db.database import get_session
         assert self.state is not None
-        self.event_worker = EventWorker(
-            persist_events, capacity=self.config.event_queue_capacity,
-            batch_size=self.config.event_batch_size,
-            flush_seconds=self.config.event_flush_seconds,
-        )
-        await self.event_worker.start()
-        self.state.event_worker = self.event_worker
+        try:
+            self.event_worker = EventWorker(
+                persist_events, capacity=self.config.event_queue_capacity,
+                batch_size=self.config.event_batch_size,
+                flush_seconds=self.config.event_flush_seconds,
+            )
+            await self._acquire("event worker", self.event_worker.start, self.event_worker.stop)
+            self.state.event_worker = self.event_worker
 
-        async def on_device_scan(devices) -> None:
-            from api.websocket import ws_manager
+            async def on_device_scan(devices) -> None:
+                from api.websocket import ws_manager
 
-            assert self.state is not None
-            for device in devices:
-                await self.state.reconciler.reconcile(device.mac_address)
-            mapping = {device.ip_address: device.mac_address for device in devices if device.ip_address}
-            self.state.packet_analyzer.set_ip_mac_mapping(mapping)
-            await ws_manager.broadcast_devices_list([device.to_dict() for device in devices])
+                assert self.state is not None
+                for device in devices:
+                    await self.state.reconciler.reconcile(device.mac_address)
+                mapping = {device.ip_address: device.mac_address for device in devices if device.ip_address}
+                self.state.packet_analyzer.set_ip_mac_mapping(mapping)
+                await ws_manager.broadcast_devices_list([device.to_dict() for device in devices])
 
-        self.state.device_manager.add_online_callback(on_device_scan)
-        await self._start_network_enforcement()
-        self.reconciliation_worker = ReconciliationWorker(
-            self.state.reconciler,
-            interval_seconds=self.config.reconciliation_interval_seconds,
-        )
-        await self.reconciliation_worker.start()
-        self.state.reconciliation_worker = self.reconciliation_worker
-        self.bandwidth_monitor = BandwidthMonitor(
-            self.state.traffic_controller,
-            get_session,
-            ws_manager.broadcast_bandwidth_stats,
-            interval_seconds=self.config.accounting_interval_seconds,
-            retention_days=self.config.telemetry_retention_days,
-            prune_interval_seconds=self.config.retention_prune_interval_seconds,
-        )
-        await self.bandwidth_monitor.start()
-        self.state.bandwidth_monitor = self.bandwidth_monitor
-        await self.state.device_manager.start_periodic_scan(self.config.device_scan_interval)
+            self.state.device_manager.add_online_callback(on_device_scan)
+            await self._start_network_enforcement()
+            self.reconciliation_worker = ReconciliationWorker(
+                self.state.reconciler,
+                interval_seconds=self.config.reconciliation_interval_seconds,
+            )
+            await self._acquire(
+                "reconciliation worker",
+                self.reconciliation_worker.start,
+                self.reconciliation_worker.stop,
+            )
+            self.state.reconciliation_worker = self.reconciliation_worker
+            self.bandwidth_monitor = BandwidthMonitor(
+                self.state.traffic_controller,
+                get_session,
+                ws_manager.broadcast_bandwidth_stats,
+                interval_seconds=self.config.accounting_interval_seconds,
+                retention_days=self.config.telemetry_retention_days,
+                prune_interval_seconds=self.config.retention_prune_interval_seconds,
+            )
+            await self._acquire(
+                "bandwidth monitor",
+                self.bandwidth_monitor.start,
+                self.bandwidth_monitor.stop,
+            )
+            self.state.bandwidth_monitor = self.bandwidth_monitor
+            await self._acquire(
+                "periodic device scan",
+                lambda: self.state.device_manager.start_periodic_scan(self.config.device_scan_interval),
+                self.state.device_manager.stop_periodic_scan,
+            )
+        except BaseException:
+            await self._rollback_startup_failure()
+            raise
 
     async def _start_network_enforcement(self) -> None:
         """Prepare owned rules and persisted intent before traffic interception."""
         assert self.state is not None
-        await self.state.traffic_controller.initialize()
-        await self.state.content_enforcer.initialize()
+        await self._acquire(
+            "traffic controller",
+            self.state.traffic_controller.initialize,
+            self.state.traffic_controller.shutdown,
+        )
+        await self._acquire(
+            "content enforcer",
+            self.state.content_enforcer.initialize,
+            self.state.content_enforcer.shutdown,
+        )
         await self.state.reconciler.reset_runtime_state()
         await self.state.reconciler.reconcile_all()
-        await self.state.arp_spoofer.start()
-        await self.state.packet_analyzer.start()
+        await self._acquire("ARP spoofer", self.state.arp_spoofer.start, self.state.arp_spoofer.stop)
+        await self._acquire(
+            "packet analyzer", self.state.packet_analyzer.start, self.state.packet_analyzer.stop
+        )
 
     async def stop_services(self, timeout: float = 10.0) -> None:
         from db.database import close_db
 
-        cleanup = []
-        if self.state is not None:
-            cleanup.extend([
-                self.state.device_manager.stop_periodic_scan,
-                self.state.arp_spoofer.stop,
-                self.state.packet_analyzer.stop,
-            ])
-            if getattr(self.state, "reconciliation_worker", None) is not None:
-                cleanup.append(self.state.reconciliation_worker.stop)
-            if getattr(self.state, "bandwidth_monitor", None) is not None:
-                cleanup.append(self.state.bandwidth_monitor.stop)
-            if getattr(self.state, "content_enforcer", None) is not None:
-                cleanup.append(self.state.content_enforcer.shutdown)
-            cleanup.extend([
-                self.state.traffic_controller.shutdown,
-                self.state.device_blocker.shutdown,
-            ])
-        if self.event_worker is not None:
-            cleanup.append(self.event_worker.stop)
-        cleanup.append(close_db)
+        if self._lifecycle_managed:
+            cleanup = list(reversed(self._cleanup_stack))
+        else:
+            cleanup = self._legacy_cleanup_actions(close_db)
         failures = []
+        completed = []
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        for index, stop in enumerate(cleanup):
+        for index, (name, stop) in enumerate(cleanup):
             remaining = max(0.0, deadline - loop.time())
             operations_left = len(cleanup) - index
             operation_timeout = max(0.001, remaining / operations_left)
             try:
                 await asyncio.wait_for(stop(), timeout=operation_timeout)
             except TimeoutError:
-                logging.getLogger(__name__).error("Service cleanup exceeded its shutdown budget")
-                failures.append(RuntimeError("Service cleanup timed out"))
+                logging.getLogger(__name__).error("%s cleanup exceeded its shutdown budget", name)
+                failures.append(RuntimeError(f"{name} cleanup timed out"))
+            except asyncio.CancelledError:
+                logging.getLogger(__name__).error("%s cleanup was cancelled", name)
+                failures.append(RuntimeError(f"{name} cleanup was cancelled"))
             except Exception as error:
-                logging.getLogger(__name__).exception("Service cleanup failed")
+                logging.getLogger(__name__).exception("%s cleanup failed", name)
                 failures.append(error)
+            else:
+                completed.append((name, stop))
+                self._mark_cleaned(name)
+        if self._lifecycle_managed and completed:
+            self._cleanup_stack = [action for action in self._cleanup_stack if action not in completed]
         if failures:
             raise ExceptionGroup("Service shutdown failed", failures)
+
+    def _legacy_cleanup_actions(
+        self, close_db: Callable[[], Awaitable[Any]]
+    ) -> list[tuple[str, Callable[[], Awaitable[Any]]]]:
+        acquired: list[tuple[str, Callable[[], Awaitable[Any]]]] = []
+        if self.state is not None:
+            acquired.append(("device blocker", self.state.device_blocker.shutdown))
+        if self.event_worker is not None:
+            acquired.append(("event worker", self.event_worker.stop))
+        if self.state is not None:
+            acquired.append(("traffic controller", self.state.traffic_controller.shutdown))
+            if getattr(self.state, "content_enforcer", None) is not None:
+                acquired.append(("content enforcer", self.state.content_enforcer.shutdown))
+            acquired.extend([
+                ("ARP spoofer", self.state.arp_spoofer.stop),
+                ("packet analyzer", self.state.packet_analyzer.stop),
+            ])
+            if getattr(self.state, "reconciliation_worker", None) is not None:
+                acquired.append(("reconciliation worker", self.state.reconciliation_worker.stop))
+            if getattr(self.state, "bandwidth_monitor", None) is not None:
+                acquired.append(("bandwidth monitor", self.state.bandwidth_monitor.stop))
+            acquired.append(("periodic device scan", self.state.device_manager.stop_periodic_scan))
+        return list(reversed(acquired)) + [("database", close_db)]
+
+    def _mark_cleaned(self, name: str) -> None:
+        if name == "event worker":
+            self.event_worker = None
+            if self.state is not None:
+                self.state.event_worker = None
+        elif name == "reconciliation worker":
+            self.reconciliation_worker = None
+            if self.state is not None:
+                self.state.reconciliation_worker = None
+        elif name == "bandwidth monitor":
+            self.bandwidth_monitor = None
+            if self.state is not None:
+                self.state.bandwidth_monitor = None
 
     async def run(self) -> None:
         import uvicorn

@@ -7,6 +7,78 @@ from main import ParentalControlApp
 
 
 @pytest.mark.asyncio
+async def test_start_failure_rolls_back_only_acquired_services_in_reverse_order(monkeypatch):
+    """A failure starting a later worker must not leave earlier services running."""
+    calls = []
+
+    class Service:
+        def __init__(self, name):
+            self.name = name
+
+        async def start(self):
+            calls.append(f"{self.name}:start")
+
+        async def stop(self):
+            calls.append(f"{self.name}:stop")
+
+        async def initialize(self):
+            calls.append(f"{self.name}:initialize")
+
+        async def shutdown(self):
+            calls.append(f"{self.name}:shutdown")
+
+    class EventWorker(Service):
+        def __init__(self, *args, **kwargs):
+            super().__init__("events")
+
+    class FailingReconciliationWorker(Service):
+        def __init__(self, *args, **kwargs):
+            super().__init__("reconciliation")
+
+        async def start(self):
+            calls.append("reconciliation:start")
+            raise RuntimeError("reconciliation failed")
+
+    from core import packet_events, reconciliation_worker
+
+    monkeypatch.setattr(packet_events, "EventWorker", EventWorker)
+    monkeypatch.setattr(reconciliation_worker, "ReconciliationWorker", FailingReconciliationWorker)
+
+    app = ParentalControlApp(AppConfig())
+    app.state = SimpleNamespace(
+        device_manager=SimpleNamespace(add_online_callback=lambda callback: calls.append("scan:registered")),
+        traffic_controller=Service("traffic"),
+        content_enforcer=Service("content"),
+        reconciler=SimpleNamespace(
+            reset_runtime_state=Service("state").initialize,
+            reconcile_all=Service("intent").initialize,
+        ),
+        arp_spoofer=Service("arp"),
+        packet_analyzer=Service("capture"),
+    )
+
+    with pytest.raises(RuntimeError, match="reconciliation failed"):
+        await app.start_services()
+
+    assert calls == [
+        "events:start",
+        "scan:registered",
+        "traffic:initialize",
+        "content:initialize",
+        "state:initialize",
+        "intent:initialize",
+        "arp:start",
+        "capture:start",
+        "reconciliation:start",
+        "capture:stop",
+        "arp:stop",
+        "content:shutdown",
+        "traffic:shutdown",
+        "events:stop",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_shutdown_attempts_remaining_cleanup_and_database_after_failure(monkeypatch):
     calls = []
     def component(name, method, fail=False):
@@ -31,7 +103,7 @@ async def test_shutdown_attempts_remaining_cleanup_and_database_after_failure(mo
     with pytest.raises(ExceptionGroup) as error:
         await app.stop_services()
     assert calls == [
-        "scan", "arp", "capture", "reconciliation", "accounting",
+        "scan", "accounting", "reconciliation", "capture", "arp",
         "traffic", "firewall", "database"
     ]
     assert len(error.value.exceptions) == 2
@@ -71,14 +143,22 @@ async def test_enforcement_is_replayed_before_interception_starts():
 
     app = ParentalControlApp(AppConfig())
     app.state = SimpleNamespace(
-        traffic_controller=SimpleNamespace(initialize=async_step("traffic-ready")),
-        content_enforcer=SimpleNamespace(initialize=async_step("content-ready")),
+        traffic_controller=SimpleNamespace(
+            initialize=async_step("traffic-ready"), shutdown=async_step("traffic-stopped")
+        ),
+        content_enforcer=SimpleNamespace(
+            initialize=async_step("content-ready"), shutdown=async_step("content-stopped")
+        ),
         reconciler=SimpleNamespace(
             reset_runtime_state=async_step("state-reset"),
             reconcile_all=async_step("intent-replayed"),
         ),
-        arp_spoofer=SimpleNamespace(start=async_step("interception-started")),
-        packet_analyzer=SimpleNamespace(start=async_step("observation-started")),
+        arp_spoofer=SimpleNamespace(
+            start=async_step("interception-started"), stop=async_step("interception-stopped")
+        ),
+        packet_analyzer=SimpleNamespace(
+            start=async_step("observation-started"), stop=async_step("observation-stopped")
+        ),
     )
 
     await app._start_network_enforcement()
