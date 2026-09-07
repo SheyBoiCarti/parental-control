@@ -338,3 +338,95 @@ async def test_database_initialization_failure_closes_owned_database(monkeypatch
         await app.initialize_auth()
 
     assert calls == ["configured", "closed"]
+
+
+def _install_returning_server_runtime(app, monkeypatch, calls):
+    workers = []
+    cycle = 0
+
+    class Worker:
+        def __init__(self, number):
+            self.number = number
+
+        async def start(self):
+            calls.append(f"worker:{self.number}:start")
+
+        async def stop(self):
+            calls.append(f"worker:{self.number}:stop")
+
+    class ReturningServer:
+        def __init__(self, config):
+            self.config = config
+
+        async def serve(self):
+            calls.append("server:return")
+
+    async def initialize_auth():
+        nonlocal cycle
+        cycle += 1
+        number = cycle
+        calls.append(f"database:{number}:open")
+
+        async def close_database():
+            calls.append(f"database:{number}:close")
+
+        app._register_cleanup("database", close_database)
+
+    async def initialize():
+        calls.append(f"initialize:{cycle}")
+
+    async def start_services():
+        worker = Worker(cycle)
+        workers.append(worker)
+        app.event_worker = worker
+        await app._acquire("event worker", worker.start, worker.stop)
+
+    monkeypatch.setattr(app, "initialize_auth", initialize_auth)
+    monkeypatch.setattr(app, "initialize", initialize)
+    monkeypatch.setattr(app, "start_services", start_services)
+    monkeypatch.setattr("main.os.geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr("main.build_uvicorn_config", lambda config, api: object())
+    monkeypatch.setattr("api.app.create_app", lambda config, auth_service: object())
+    monkeypatch.setattr("uvicorn.Server", ReturningServer)
+    return workers
+
+
+@pytest.mark.asyncio
+async def test_returning_server_cleans_owned_resources_and_database(monkeypatch):
+    calls = []
+    app = ParentalControlApp(AppConfig())
+    _install_returning_server_runtime(app, monkeypatch, calls)
+
+    await app.run()
+
+    assert calls == [
+        "database:1:open",
+        "initialize:1",
+        "worker:1:start",
+        "server:return",
+        "worker:1:stop",
+        "database:1:close",
+    ]
+    assert app.event_worker is None
+    assert not app._cleanup_stack
+    assert not app._cleanup_tasks
+
+
+@pytest.mark.asyncio
+async def test_returning_server_allows_repeated_complete_lifecycle_cycles(monkeypatch):
+    calls = []
+    app = ParentalControlApp(AppConfig())
+    workers = _install_returning_server_runtime(app, monkeypatch, calls)
+
+    await app.run()
+    await app.run()
+
+    assert len(workers) == 2
+    assert calls.count("server:return") == 2
+    assert calls.count("worker:1:start") == calls.count("worker:1:stop") == 1
+    assert calls.count("worker:2:start") == calls.count("worker:2:stop") == 1
+    assert calls.count("database:1:open") == calls.count("database:1:close") == 1
+    assert calls.count("database:2:open") == calls.count("database:2:close") == 1
+    assert app.event_worker is None
+    assert not app._cleanup_stack
+    assert not app._cleanup_tasks
