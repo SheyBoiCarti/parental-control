@@ -49,7 +49,7 @@ Implementation is underway. Startup repairs are verified locally; broader authen
 | R18 browser login | Partial | Cookie session restore/login, legacy-storage removal, no Basic headers, centralized expiry and confirmed logout implemented. Component tests reject stale storage and 500/503; browser/reload/offline acceptance pending. |
 | R19 truthful mutations | Pending | Reconciliation, tombstones and UI state required. |
 | R20 rule normalization | Pending | Canonical values, constraints/migrations and API tests required. |
-| R21 lifecycle | Pending | Owned reverse cleanup and bounded worker stop required. |
+| R21 lifecycle | Partial | Portable reverse-acquisition rollback and bounded cleanup are covered; Linux signal/systemd/kernel leak acceptance remains unverified. |
 | R22 catalog | Pending | Versioned JSON import and custom preservation required. |
 | R23 reproducibility | Partial | Universal Python constraints and portable CI added; test suites, clean matrix execution and Linux CI still required. |
 | R24 discovery | Pending | Off-loop bounded scans and gateway/local target guards required. |
@@ -129,6 +129,13 @@ Implementation is underway. Startup repairs are verified locally; broader authen
 - ARP service records the original IP forwarding state and restores either enabled or disabled state on stop. Failed forwarding reads/enables/restoration raise errors; inability to read the original state is no longer interpreted as disabled. Two injected-state tests cover both initial values.
 - Three lifecycle tests pass. Remaining: actual acquired-resource registration/reverse rollback, cancellation handling, bounded quiet-capture stop, restart/crash state recovery and Linux shutdown acceptance. This checkpoint does not establish R21 completion.
 - Full Python3.12 backend suite after lifecycle changes: 81 passed, with existing deprecation warnings.
+
+## Lifecycle acquisition acceptance checkpoint
+
+- R21 remains partial: `ParentalControlApp` now records each successfully acquired owned resource and unwinds that stack in reverse dependency order. Startup failures in authentication, initialization, or service startup invoke the same bounded cleanup path while preserving the original startup error. Cleanup actions that fail, time out, or are cancelled remain recorded rather than being presented as removed; later cleanup actions, including the database when it was acquired, still run within the existing ten-second aggregate budget.
+- Portable regression coverage injects local service doubles only. It reproduces a reconciliation-worker start failure after event processing, traffic control, content enforcement, ARP interception, and packet capture have started, then verifies exactly the acquired resources stop in reverse order. Existing lifecycle regressions continue to cover independent cleanup failures, cancellation of stalled cleanup, database closure, and forwarding restoration without invoking host networking, iptables, traffic control, or packet capture.
+- Evidence: the new focused lifecycle test failed before the acquisition stack was implemented because the started resources were never stopped; after the minimal lifecycle changes `python -m pytest backend/tests/test_lifecycle.py -q` passed 6 tests. Python 3.11 `python -m pytest backend/tests -q --basetemp .pytest-tmp-lifecycle-acceptance` passed 168 tests, skipped 3 Linux-only tests, and reported the existing two upstream TestClient deprecation warnings.
+- Limits: these portable tests do not prove delivery of a real SIGTERM through Uvicorn/systemd, clean stop on a Linux quiet interface, absence of lingering Linux capture threads/tasks, kernel resource leak recovery, or a full installation lifecycle. Those require the disposable Linux fixture and systemd acceptance work; this evidence does not complete R21 or installation acceptance.
 
 ## Quiet capture shutdown checkpoint
 
