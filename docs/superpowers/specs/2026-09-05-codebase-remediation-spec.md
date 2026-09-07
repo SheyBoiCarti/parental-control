@@ -4,8 +4,81 @@
 
 **Reviewed revision:** `c53e818296d227aed45c26764af78b1cdbb2b10e`
 
-**Status:** Implementation underway on `fix/codebase-remediation`; see `docs/remediation-results.md` for verified progress and remaining acceptance.
+**Status:** Portable implementation is substantially complete on `fix/codebase-remediation` at `4bf488e`; privileged Linux, browser, installer, lifecycle, and concurrency acceptance remains. The dated handoff below is authoritative for current progress.
 **Goal:** Make installation, authentication, device management, traffic enforcement, reporting, and recovery behave as advertised, with reproducible evidence for every repaired defect.
+
+## 0. Implementation status and continuation handoff (2026-09-07)
+
+This section records the repository state when implementation paused because of usage limits. Continue from branch `fix/codebase-remediation`; the reviewed baseline is `c53e818296d227aed45c26764af78b1cdbb2b10e` and the latest implementation checkpoint is `4bf488e`. The working tree was clean when this handoff was written. Do not repeat the portable implementation without first checking the code and `docs/remediation-results.md`.
+
+The implementation checkpoints after the baseline are:
+
+| Commit | Scope |
+| --- | --- |
+| `bd9aadc` | Startup/configuration foundation and persisted session authentication |
+| `1f2ee75` | Bounded command execution and network utility conversion |
+| `5c588af` | Dashboard delivery, rule handling, discovery snapshots, and event lifecycle |
+| `73d7177` | Persisted desired/applied reconciliation and directional traffic shaping |
+| `b4ab2c0` | Inline DNS/TLS content enforcement and verdict metadata |
+| `2a38801` | Owned bandwidth counter telemetry and retention |
+| `0c17f5d` | Topology validation and failed rule-deletion recovery |
+| `051918a` | Full-block firewall ownership and cleanup error persistence |
+| `821cf3a` | Periodic reconciliation supervision and bounded service shutdown |
+| `9138bf8` | Catalog identities and durable unresolved-application diagnostics |
+| `4bf488e` | Isolated Linux kernel-adapter CI gate and namespace safety harness |
+
+### Verified checkpoint
+
+- Backend suites pass **167 tests with 3 Linux-only tests skipped** on both Python 3.11 and 3.12. Python 3.11 reports two upstream warnings; Python 3.12 reports 103 warnings, primarily deprecation warnings already recorded in `docs/remediation-results.md`.
+- Frontend verification passes **15 Vitest tests**, ESLint, TypeScript, and the Vite production build under Node 22. `npm audit` reported zero vulnerabilities. Vite still reports an approximately 614 kB bundle-size warning.
+- `bash -n scripts/install.sh` and `bash -n scripts/run-linux-integration.sh` pass, and `.github/workflows/ci.yml` parses as YAML.
+- The three privileged Linux tests intentionally skip on this Windows workstation. The Linux CI job has been defined but has not run, so no real kernel enforcement result exists yet.
+- Playwright is named by this specification but has **not** been added to the frontend dependencies, configuration, scripts, or tests.
+
+“Portable implemented” below means the production code and isolated regression coverage exist. It does not satisfy acceptance criteria that require a real Linux kernel, traffic measurements, a production browser, systemd, or failure/concurrency testing that has not run.
+
+### Per-issue status and remaining work
+
+| Issue | Current implementation status | Work or evidence still required |
+| --- | --- | --- |
+| R01 | Portable implemented and locally verified: sources compile; CLI help and explicit listener/component configuration work without privileged startup. | Re-run in the final clean Linux matrix and retain CI evidence. |
+| R02 | Portable implemented and locally verified: authentication imports and missing-credential responses are controlled. | Re-run in the final clean Linux matrix. |
+| R03 | Portable implemented: owned NFQUEUE lifecycle, UDP/TCP DNS inspection, bounded split/out-of-order TLS SNI inspection, UDP/443 fallback, flow limits/expiry/invalidation, and verdict metadata have regression tests. | In disposable namespaces, prove real queue binding and allowed/blocked UDP DNS, TCP DNS, split TLS/SNI, QUIC fallback, malformed/timeout behavior, policy changes, overload, and worker failure with packet traces. |
+| R04 | Portable implemented: private credential/session schema, bootstrap/migration, bcrypt limits, off-loop hashing, rotation, reset CLI, restart behavior, commit failure, session/socket revocation, and CSRF are tested. | Complete browser restart/password-change/logout flows, HTTPS deployment checks, expiry/race/concurrency cases, and final migration evidence. |
+| R05 | Portable implemented: typed configuration, CLI/environment/explicit `.env` precedence, cwd-independent paths, installer preservation, permissions/symlink checks, and service environment paths exist. | Run fresh install and rerun upgrade under Linux/systemd; verify HTTPS/origin configuration, ownership, preserved credentials/data, start/restart/stop. |
+| R06 | Portable implemented: cookie-session/origin WebSocket authentication, bounded per-client queues, slow-client isolation, session revalidation, and revocation are tested. | Add production-browser/real-ASGI coverage for invalid and expired sessions, origin variants, reconnect during credential rotation, and sustained slow clients. |
+| R07 | Portable implemented: thread-safe bounded ingestion, immutable stable-ID events, batching, retry/deduplication, health counters, drain, DB-before-broadcast ordering, and unknown-device isolation are tested. | Add sustained stress, cancellation/drain-timeout, persistent write-failure, and restart/recovery acceptance. |
+| R08 | Portable implemented: separate source/upload and destination/download HTB classes and flower classifiers, idempotent replacement, rollback, and restoration are tested through command adapters. | Measure asymmetric upload/download limits for two devices for the specified duration, include an unaffected control, and verify restart/address-change behavior using real `tc`. |
+| R09 | Portable implemented across current network adapters: bounded typed command failures, timeouts, sanitized outcomes, rollback, and no false success are covered. | Complete failure injection for every multi-step kernel operation and API mutation, including concurrent operations and Linux partial failures; confirm each desired/applied result. |
+| R10 | Portable implemented: desired/applied schema, startup replay, address/scan retry, idempotent per-device reconciliation, independent periodic supervision, failure isolation, and health reporting exist. | In Linux, restart twice and prove persisted protections reapply without duplicate resources; exercise per-component failures, address changes, and recovery. |
+| R11 | Portable implemented: monitoring, full block, content rules, and bandwidth rules independently require interception; full block has precedence and removing it restores other intent. | In the same-LAN topology, prove block/unblock connectivity and verify content/bandwidth protection remains routed through the appliance independently of observation. |
+| R12 | Partial: dedicated/commented iptables ownership, foreign-entry refusal, exact block cleanup, startup rollback, and in-memory traffic-control ownership/refusal exist. | Persist or reconstruct traffic-control ownership safely across crashes/restarts, inventory child resources, compare foreign iptables/qdisc snapshots, inject partial cleanup failures, and prove no foreign resource changes in Linux. |
+| R13 | Portable implemented: absolute static serving, SPA fallback, reserved/API routes, traversal rejection, missing-asset handling, API-only mode, and installer asset checks are tested. | Use Playwright against the backend-served production build to verify login, direct deep links, refresh, assets, API 404 behavior, and no console/network errors. |
+| R14 | Portable implemented: strict TypeScript/ESLint, locked npm installation, build/test scripts, zero-audit dependency set, and CI checks exist. | Run a clean Node 22 install in CI and the production Playwright suite; decide whether the bundle warning needs remediation or explicit acceptance. |
+| R15 | Portable implemented: one close handler, bounded exponential reconnect with jitter, stable subscriptions, authentication gating, timer cleanup, logout behavior, and StrictMode cases are tested. | Add exact initial-connect failure, repeated failure, delayed-open, resubscription, logout-during-delay, and production-browser cases. |
+| R16 | Portable implemented: owned HTB counter reads, baselines/deltas/resets, IP reuse handling, failed-DB retry, retention, broadcasts, health counters, and bounded stop are tested. | Compare controlled real transfers with `tc`, database, API, WebSocket, and chart totals; document header/accounting semantics and verify idle/control traffic. |
+| R17 | Portable implemented: successful scans publish the full persisted snapshot, offline devices remain, failed scans preserve state, and frontend socket updates upsert unknown devices. | Verify time-based automatic/manual scans and offline-return behavior through API and production browser, including restart and concurrent updates. |
+| R18 | Portable implemented: browser auth uses cookie sessions, rejects failed login/session checks, clears legacy credentials, centralizes expiry, sends no Basic/password storage, and confirms logout. | Capture production browser storage/requests/URLs across login, reload, password rotation, expiry, offline/server errors, and logout to prove no credential leakage or false authentication. |
+| R19 | Partial: API/UI expose desired/applied states, return pending/error outcomes, await rule mutations, preserve failed input, use deletion tombstones, restore active intent on removal failure, and suppress false deletion broadcasts. | Serialize all mutation routes per device; inject DB and every component failure; test concurrent block/unblock/rule edits, retry/restart, status presentation, and no false success across API and browser. |
+| R20 | Portable implementation is substantial: canonical domains/MACs, schema uniqueness, migration/upserts, duplicate concurrency coverage, catalog/matcher reload, and invalid-rule handling exist. | Complete full API concurrency/deletion/migration acceptance, equivalent-MAC cases, field-size/input bounds, and database-bypass/raw legacy-data handling. |
+| R21 | Partial: workers have stop/wakeup paths, owned cleanup runs in reverse order, forwarding restoration is scoped, reconciliation/accounting/event services are supervised, and shutdown has a shared ten-second budget. | Test SIGTERM, quiet capture, every partial-start acquisition failure, drain timeout, non-cooperative workers, repeated start/stop, and real Linux proof of no threads/tasks/hooks/qdiscs left behind. |
+| R22 | Portable implemented: versioned JSON catalog import/update preserves custom entries; stable identifiers and display names reach API/UI; missing signatures create durable unresolved diagnostics that clear on restoration. | Assert complete shipped-catalog/API enumeration and matching coverage, then exercise catalog selection and unresolved/restored states in a production browser. |
+| R23 | Partial: Python/npm locks, portable CI matrix, host-command guard, Linux namespace sentinel, artifact upload, and kernel-adapter tests for real HTB, iptables ownership, and NFQUEUE binding exist. | Run CI and preserve evidence; build the full client/appliance/gateway/upstream fixture; add Playwright; collect pcaps/counters/assertions; prove cleanup on success/failure and record exact platform versions. |
+| R24 | Portable implemented: scans/config probes run off-loop, reverse DNS is bounded, full snapshots distinguish failure, and gateway/local/network/broadcast/out-of-subnet guards run before mutations. | Test multi-interface routing and real topology, stalled resolver/process shutdown, DHCP/address changes, scan concurrency, gateway discovery mismatch, and long-running Linux lifecycle behavior. |
+
+### Ordered remaining implementation plan
+
+1. **Add production-browser acceptance.** Add Playwright and a backend-served-build fixture using temporary state and fake network adapters. Cover R13-R15, R17-R19, and R22: login/reload/logout, deep links, storage/request inspection, reconnect sequences, offline devices, desired/applied/error UI, rule failures, and catalog identities.
+2. **Expand the isolated Linux fixture.** Replace the current dummy-interface smoke scope with controlled client, appliance, gateway, and upstream namespaces. Keep client routes pointed at the gateway so interception is exercised. Add packet captures and real traffic assertions for R03 and R11.
+3. **Measure shaping and accounting.** Run asymmetric upload/download transfers for at least two devices plus an unaffected control. Compare measured rates and byte deltas with owned `tc` classes, persisted rows, API/WebSocket payloads, and rendered charts for R08 and R16.
+4. **Finish persistent ownership and recovery.** Prove crash/restart reconstruction of traffic-control resources, inventory child resources, preserve foreign firewall/qdisc state, and cover partial additions/removals for R09, R10, and R12.
+5. **Close mutation and data races.** Serialize every device mutation path; add DB/kernel failure matrices, concurrent block/unblock and rule operations, restart retry, canonical duplicate/deletion, and legacy/raw-data cases for R19 and R20.
+6. **Complete lifecycle and discovery acceptance.** Exercise SIGTERM, quiet capture, all partial-start points, non-cooperative tasks, resolver shutdown, repeated lifecycle, multi-interface selection, DHCP/address changes, and no-resource-leak assertions for R07, R17, R21, and R24.
+7. **Complete authentication and socket browser cases.** Exercise expiry, password rotation, invalid origins/sessions, slow sockets, server/offline errors, HTTPS/origin configuration, and request/storage inspection for R04, R06, and R18.
+8. **Run installer acceptance.** In a disposable supported Linux host, run fresh install, rerun/upgrade, systemd start/restart/stop, configuration/data preservation, permissions, dashboard delivery, and local reset recovery for R05, R13, and R14.
+9. **Run all clean gates and reconcile the record.** Execute locked Python 3.11/3.12, Node 22, Playwright, migrations, privileged namespaces, installer, and lifecycle suites. Update `docs/remediation-results.md`, this table, stage checkboxes, README platform evidence, and every R01-R24 acceptance result.
+
+Do not claim the remediation complete until the Linux traffic/throughput/ownership tests, production Playwright tests, installer/systemd tests, lifecycle/failure matrices, and every issue's acceptance criteria have passed. The implementation-stage checkboxes in section 7 are the original execution checklist and have not been reconciled item by item at this checkpoint; this dated section is the authoritative continuation status.
 
 ## 1. Instructions for the implementing agent
 
