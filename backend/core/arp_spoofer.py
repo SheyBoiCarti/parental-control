@@ -38,12 +38,21 @@ class ARPSpoofer:
         interface: str,
         gateway_ip: str,
         gateway_mac: str,
-        local_mac: str
+        local_mac: str,
+        *,
+        local_ip: str | None = None,
+        network_subnet: str | None = None,
     ):
         self.interface = interface
         self.gateway_ip = gateway_ip
         self.gateway_mac = gateway_mac
         self.local_mac = local_mac
+        self.local_ip = local_ip
+        self.network = (
+            ipaddress.IPv4Network(network_subnet, strict=True)
+            if network_subnet
+            else None
+        )
 
         self._targets: Dict[str, SpoofTarget] = {}  # MAC -> SpoofTarget
         self._spoof_task: Optional[asyncio.Task] = None
@@ -60,8 +69,17 @@ class ARPSpoofer:
         address = ipaddress.IPv4Address(ip)
         normalized_mac = normalize_mac(mac)
         protected = {normalize_mac(value) for value in (self.gateway_mac, self.local_mac) if value}
-        if normalized_mac in protected or str(address) == self.gateway_ip:
+        if (
+            normalized_mac in protected
+            or str(address) == self.gateway_ip
+            or (self.local_ip is not None and str(address) == self.local_ip)
+        ):
             raise ValueError("Gateway and appliance cannot be interception targets")
+        if self.network is not None and (
+            address not in self.network
+            or address in {self.network.network_address, self.network.broadcast_address}
+        ):
+            raise ValueError("Interception target must be a host in the selected subnet")
         if address.is_multicast or address.is_loopback or address.is_unspecified or address.is_reserved:
             raise ValueError("Interception requires a unicast device address")
         if int(normalized_mac[:2], 16) & 1 or normalized_mac == "00:00:00:00:00:00":

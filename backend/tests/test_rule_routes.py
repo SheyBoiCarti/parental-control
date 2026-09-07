@@ -65,7 +65,10 @@ async def test_bandwidth_apply_failure_returns_stable_503_error(monkeypatch):
     monkeypatch.setattr(
         rules,
         "_app_state",
-        SimpleNamespace(reconciler=SimpleNamespace(reconcile=AsyncMock(return_value=failure))),
+        SimpleNamespace(
+            arp_spoofer=SimpleNamespace(validate_target=lambda ip, mac: None),
+            reconciler=SimpleNamespace(reconcile=AsyncMock(return_value=failure)),
+        ),
     )
     monkeypatch.setattr(
         rules,
@@ -85,3 +88,94 @@ async def test_bandwidth_apply_failure_returns_stable_503_error(monkeypatch):
     assert raised.value.status_code == 503
     assert raised.value.detail["code"] == "ENFORCEMENT_APPLY_FAILED"
     assert raised.value.detail["enforcement"]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_protected_target_rule_is_rejected_before_intent_is_saved(monkeypatch):
+    def reject(ip_address, mac):
+        raise ValueError("Gateway and appliance cannot be interception targets")
+
+    save = AsyncMock()
+    monkeypatch.setattr(
+        rules,
+        "_app_state",
+        SimpleNamespace(
+            arp_spoofer=SimpleNamespace(validate_target=reject),
+            reconciler=SimpleNamespace(reconcile=AsyncMock()),
+        ),
+    )
+    monkeypatch.setattr(
+        rules,
+        "get_device_by_mac",
+        AsyncMock(return_value=SimpleNamespace(id=9, ip_address="192.0.2.1")),
+    )
+    monkeypatch.setattr(rules, "save_rule", save)
+
+    with pytest.raises(HTTPException) as raised:
+        await rules.create_bandwidth_rule(
+            "AA:BB:CC:DD:EE:01",
+            rules.BandwidthRuleRequest(download_kbps=2000, upload_kbps=500),
+            response=Response(),
+            user="admin",
+        )
+
+    assert raised.value.status_code == 422
+    save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_rule_removal_restores_intent_and_avoids_deleted_broadcast(
+    tmp_path, monkeypatch
+):
+    from config import AppConfig
+    from db import database
+    from db.models import DeviceRule, Device
+    from db.rules import save_rule as persist_rule
+    from sqlalchemy import select
+
+    database.configure_database(AppConfig(data_dir=tmp_path))
+    try:
+        await database.init_db()
+        async with database.get_session() as session:
+            device = Device(mac_address="AA:BB:CC:DD:EE:19")
+            session.add(device)
+            await session.flush()
+            device_id = device.id
+        saved = await persist_rule(
+            device_id,
+            "bandwidth",
+            {"download_kbps": 2000, "upload_kbps": 500},
+        )
+        failure = result("error", "error", "Bandwidth removal failed")
+        broadcast = AsyncMock()
+        monkeypatch.setattr(
+            rules,
+            "_app_state",
+            SimpleNamespace(
+                reconciler=SimpleNamespace(
+                    reconcile=AsyncMock(return_value=failure),
+                ),
+                content_blocker=SimpleNamespace(_load_device_rules=AsyncMock()),
+            ),
+        )
+        monkeypatch.setattr(rules.ws_manager, "broadcast_rule_update", broadcast)
+
+        with pytest.raises(HTTPException) as raised:
+            await rules.delete_rule(
+                "AA:BB:CC:DD:EE:19",
+                saved.id,
+                response=Response(),
+                user="admin",
+            )
+
+        assert raised.value.status_code == 503
+        async with database.get_session() as session:
+            restored = list((await session.execute(select(DeviceRule))).scalars())
+        assert len(restored) == 1
+        assert restored[0].rule_value == {
+            "download_kbps": 2000,
+            "upload_kbps": 500,
+        }
+        broadcast.assert_not_awaited()
+    finally:
+        await database.close_db()

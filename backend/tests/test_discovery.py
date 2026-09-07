@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -80,3 +82,114 @@ async def test_scan_api_failure_does_not_write_or_broadcast(monkeypatch):
     assert error.value.status_code == 503
     manager.update_devices_from_scan.assert_not_awaited()
     broadcast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reverse_dns_is_concurrent_bounded_and_timed_out(monkeypatch):
+    devices = [
+        (f"02:00:00:00:00:{index:02X}", f"192.0.2.{index + 10}")
+        for index in range(12)
+    ]
+    monkeypatch.setattr(
+        "core.device_manager.srp",
+        lambda *args, **kwargs: (
+            [(None, SimpleNamespace(hwsrc=mac, psrc=ip)) for mac, ip in devices],
+            [],
+        ),
+    )
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_lookup(ip):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.1)
+            return "too-late.example"
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr("core.device_manager.get_hostname_from_ip", slow_lookup)
+    manager = DeviceManager(
+        "eth0",
+        network_subnet="192.0.2.0/24",
+        reverse_dns_concurrency=3,
+        reverse_dns_timeout=0.02,
+    )
+
+    started = time.monotonic()
+    discovered = await manager.scan_network()
+    elapsed = time.monotonic() - started
+
+    assert len(discovered) == 12
+    assert all(device.hostname is None for device in discovered)
+    assert 1 < peak <= 3
+    assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_network_configuration_probes_do_not_block_the_event_loop(monkeypatch):
+    def delayed(value):
+        def probe(*args):
+            time.sleep(0.1)
+            return value
+        return probe
+
+    monkeypatch.setattr(
+        "core.device_manager.get_interface_mac",
+        delayed("02:00:00:00:00:02"),
+    )
+    monkeypatch.setattr(
+        "core.device_manager.get_interface_ip",
+        delayed("192.0.2.2"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "core.device_manager.get_default_gateway",
+        delayed(("192.0.2.1", "eth0")),
+    )
+    monkeypatch.setattr(
+        "core.device_manager.get_network_subnet",
+        delayed("192.0.2.0/24"),
+    )
+    manager = DeviceManager("eth0")
+    monkeypatch.setattr(manager, "_resolve_mac", AsyncMock(return_value="02:00:00:00:00:01"))
+    monkeypatch.setattr(manager, "_init_db", AsyncMock())
+
+    started = time.monotonic()
+    initialization = asyncio.create_task(manager.initialize())
+    await asyncio.sleep(0.02)
+    responsiveness = time.monotonic() - started
+    await initialization
+
+    assert responsiveness < 0.08
+    assert manager.local_ip == "192.0.2.2"
+
+
+@pytest.mark.asyncio
+async def test_discovery_can_restart_after_worker_pool_shutdown(monkeypatch):
+    monkeypatch.setattr(
+        "core.device_manager.srp",
+        lambda *args, **kwargs: ([
+            (None, SimpleNamespace(
+                hwsrc="02:00:00:00:00:20",
+                psrc="192.0.2.20",
+            ))
+        ], []),
+    )
+    lookups = []
+    monkeypatch.setattr(
+        "core.device_manager.get_hostname_from_ip",
+        lambda ip: lookups.append(ip),
+    )
+    manager = DeviceManager("eth0", network_subnet="192.0.2.0/24")
+
+    assert len(await manager.scan_network()) == 1
+    await manager.stop_periodic_scan()
+    assert len(await manager.scan_network()) == 1
+    assert lookups == ["192.0.2.20", "192.0.2.20"]
+    await manager.stop_periodic_scan()

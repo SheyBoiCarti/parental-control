@@ -32,6 +32,21 @@ def test_valid_target_is_staged_without_interception_before_service_start(monkey
     assert sent == []
 
 
+@pytest.mark.parametrize("ip", ["192.0.2.2", "198.51.100.3"])
+def test_appliance_ip_and_addresses_outside_selected_subnet_are_rejected(ip):
+    spoofer = ARPSpoofer(
+        "eth0",
+        "192.0.2.1",
+        "AA:BB:CC:DD:EE:01",
+        "AA:BB:CC:DD:EE:02",
+        local_ip="192.0.2.2",
+        network_subnet="192.0.2.0/24",
+    )
+
+    with pytest.raises(ValueError):
+        spoofer.validate_target(ip, "AA:BB:CC:DD:EE:03")
+
+
 @pytest.mark.asyncio
 async def test_address_update_cannot_retarget_gateway(monkeypatch):
     spoofer = ARPSpoofer("eth0", "192.0.2.1", "AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02")

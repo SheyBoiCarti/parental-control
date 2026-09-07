@@ -143,6 +143,15 @@ async def get_device_by_mac(mac: str) -> Device:
     return device
 
 
+def _validate_enforcement_target(state, device: Device, mac: str) -> None:
+    if not device.ip_address:
+        return
+    try:
+        state.arp_spoofer.validate_target(device.ip_address, mac)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
 @router.get("", response_model=RuleListResponse)
 async def list_rules(mac: str, user: str = Depends(get_current_user)):
     """Get all rules for a device."""
@@ -171,6 +180,7 @@ async def create_bandwidth_rule(
     """Create or update bandwidth limit for a device."""
     state = get_app_state()
     device = await get_device_by_mac(mac)
+    _validate_enforcement_target(state, device, mac)
 
     db_rule = await save_rule(device.id, "bandwidth", {"download_kbps": rule.download_kbps, "upload_kbps": rule.upload_kbps})
 
@@ -198,6 +208,7 @@ async def create_app_block_rule(
     """Block an app for a device."""
     state = get_app_state()
     device = await get_device_by_mac(mac)
+    _validate_enforcement_target(state, device, mac)
 
     # Check if app exists
     available_apps = state.content_blocker.get_available_apps()
@@ -235,6 +246,7 @@ async def create_domain_block_rule(
     """Block a domain for a device."""
     state = get_app_state()
     device = await get_device_by_mac(mac)
+    _validate_enforcement_target(state, device, mac)
 
     db_rule = await save_rule(device.id, "block_domain", {"domain": rule.domain})
 
@@ -281,14 +293,36 @@ async def delete_rule(
             )
 
         rule_type = rule.rule_type
-        rule_value = rule.rule_value
-
-        await session.delete(rule)
+        rule.is_active = False
         await session.commit()
 
     if rule_type in {"block_app", "block_domain"}:
         await state.content_blocker._load_device_rules()
     result = await state.reconciler.reconcile(mac)
+
+    if result.state == "error":
+        async with get_session() as session:
+            retained = (await session.execute(
+                select(DeviceRule).where(
+                    DeviceRule.id == rule_id,
+                    DeviceRule.device_id == device.id,
+                )
+            )).scalar_one_or_none()
+            if retained is not None:
+                retained.is_active = True
+                await session.commit()
+        if rule_type in {"block_app", "block_domain"}:
+            await state.content_blocker._load_device_rules()
+        _apply_http_result(result, response)
+
+    async with get_session() as session:
+        await session.execute(delete(DeviceRule).where(
+            DeviceRule.id == rule_id,
+            DeviceRule.device_id == device.id,
+        ))
+        await session.commit()
+
+    _apply_http_result(result, response)
 
     # Broadcast update
     await ws_manager.broadcast_rule_update({
@@ -297,7 +331,6 @@ async def delete_rule(
         "rule_id": rule_id
     })
 
-    _apply_http_result(result, response)
     return {
         "status": "deleted",
         "rule_id": rule_id,
