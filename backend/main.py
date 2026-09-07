@@ -31,6 +31,7 @@ class AppState:
     reconciler: Any = None
     content_enforcer: Any = None
     bandwidth_monitor: Any = None
+    reconciliation_worker: Any = None
 
 
 def _component_types() -> dict[str, type[Any]]:
@@ -105,6 +106,7 @@ class ParentalControlApp:
         self.auth_service = None
         self.event_worker = None
         self.bandwidth_monitor = None
+        self.reconciliation_worker = None
 
     async def initialize_auth(self) -> None:
         from core.auth_service import AuthService
@@ -187,6 +189,7 @@ class ParentalControlApp:
         from api.websocket import ws_manager
         from core.bandwidth_monitor import BandwidthMonitor
         from core.packet_events import EventWorker, persist_events
+        from core.reconciliation_worker import ReconciliationWorker
         from db.database import get_session
         assert self.state is not None
         self.event_worker = EventWorker(
@@ -209,6 +212,12 @@ class ParentalControlApp:
 
         self.state.device_manager.add_online_callback(on_device_scan)
         await self._start_network_enforcement()
+        self.reconciliation_worker = ReconciliationWorker(
+            self.state.reconciler,
+            interval_seconds=self.config.reconciliation_interval_seconds,
+        )
+        await self.reconciliation_worker.start()
+        self.state.reconciliation_worker = self.reconciliation_worker
         self.bandwidth_monitor = BandwidthMonitor(
             self.state.traffic_controller,
             get_session,
@@ -231,7 +240,7 @@ class ParentalControlApp:
         await self.state.arp_spoofer.start()
         await self.state.packet_analyzer.start()
 
-    async def stop_services(self) -> None:
+    async def stop_services(self, timeout: float = 10.0) -> None:
         from db.database import close_db
 
         cleanup = []
@@ -241,6 +250,8 @@ class ParentalControlApp:
                 self.state.arp_spoofer.stop,
                 self.state.packet_analyzer.stop,
             ])
+            if getattr(self.state, "reconciliation_worker", None) is not None:
+                cleanup.append(self.state.reconciliation_worker.stop)
             if getattr(self.state, "bandwidth_monitor", None) is not None:
                 cleanup.append(self.state.bandwidth_monitor.stop)
             if getattr(self.state, "content_enforcer", None) is not None:
@@ -253,9 +264,17 @@ class ParentalControlApp:
             cleanup.append(self.event_worker.stop)
         cleanup.append(close_db)
         failures = []
-        for stop in cleanup:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        for index, stop in enumerate(cleanup):
+            remaining = max(0.0, deadline - loop.time())
+            operations_left = len(cleanup) - index
+            operation_timeout = max(0.001, remaining / operations_left)
             try:
-                await stop()
+                await asyncio.wait_for(stop(), timeout=operation_timeout)
+            except TimeoutError:
+                logging.getLogger(__name__).error("Service cleanup exceeded its shutdown budget")
+                failures.append(RuntimeError("Service cleanup timed out"))
             except Exception as error:
                 logging.getLogger(__name__).exception("Service cleanup failed")
                 failures.append(error)

@@ -52,6 +52,7 @@ export interface SystemStats {
   tls_connections_captured: number
   event_pipeline?: Record<string, number> | null
   bandwidth_pipeline?: Record<string, number> | null
+  reconciliation_pipeline?: Record<string, number> | null
 }
 
 export interface BandwidthStats {

@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+import asyncio
+import time
 import pytest
 from config import AppConfig
 from main import ParentalControlApp
@@ -21,6 +23,7 @@ async def test_shutdown_attempts_remaining_cleanup_and_database_after_failure(mo
         device_manager=component("scan", "stop_periodic_scan", True),
         arp_spoofer=component("arp", "stop"),
         packet_analyzer=component("capture", "stop", True),
+        reconciliation_worker=component("reconciliation", "stop"),
         bandwidth_monitor=component("accounting", "stop"),
         traffic_controller=component("traffic", "shutdown"),
         device_blocker=component("firewall", "shutdown"),
@@ -28,7 +31,8 @@ async def test_shutdown_attempts_remaining_cleanup_and_database_after_failure(mo
     with pytest.raises(ExceptionGroup) as error:
         await app.stop_services()
     assert calls == [
-        "scan", "arp", "capture", "accounting", "traffic", "firewall", "database"
+        "scan", "arp", "capture", "reconciliation", "accounting",
+        "traffic", "firewall", "database"
     ]
     assert len(error.value.exceptions) == 2
 
@@ -87,3 +91,42 @@ async def test_enforcement_is_replayed_before_interception_starts():
         "interception-started",
         "observation-started",
     ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_budget_cancels_stalled_cleanup_and_still_closes_database(
+    monkeypatch,
+):
+    calls = []
+    cancelled = asyncio.Event()
+
+    async def stalled():
+        calls.append("stalled")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def close():
+        calls.append("database")
+
+    async def complete():
+        calls.append("complete")
+
+    monkeypatch.setattr("db.database.close_db", close)
+    app = ParentalControlApp(AppConfig())
+    app.state = SimpleNamespace(
+        device_manager=SimpleNamespace(stop_periodic_scan=stalled),
+        arp_spoofer=SimpleNamespace(stop=complete),
+        packet_analyzer=SimpleNamespace(stop=complete),
+        traffic_controller=SimpleNamespace(shutdown=complete),
+        device_blocker=SimpleNamespace(shutdown=complete),
+    )
+
+    started = time.monotonic()
+    with pytest.raises(ExceptionGroup, match="shutdown failed"):
+        await app.stop_services(timeout=0.08)
+
+    assert time.monotonic() - started < 0.2
+    assert cancelled.is_set()
+    assert calls[-1] == "database"

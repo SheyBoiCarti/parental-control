@@ -47,6 +47,7 @@ class AppConfig(BaseModel):
     event_batch_size: int = Field(default=100, ge=1)
     event_flush_seconds: float = Field(default=1.0, gt=0)
     accounting_interval_seconds: float = Field(default=5.0, gt=0)
+    reconciliation_interval_seconds: float = Field(default=30.0, gt=0)
     telemetry_retention_days: int = Field(default=30, ge=1)
     retention_prune_interval_seconds: float = Field(default=3_600.0, gt=0)
     app_signatures_file: Path = PROJECT_DIR / "data" / "app_signatures.json"
@@ -161,6 +162,7 @@ _ENV_TO_FIELD = {
     "EVENT_QUEUE_CAPACITY": "event_queue_capacity",
     "EVENT_BATCH_SIZE": "event_batch_size", "EVENT_FLUSH_SECONDS": "event_flush_seconds",
     "ACCOUNTING_INTERVAL_SECONDS": "accounting_interval_seconds",
+    "RECONCILIATION_INTERVAL_SECONDS": "reconciliation_interval_seconds",
     "TELEMETRY_RETENTION_DAYS": "telemetry_retention_days",
     "RETENTION_PRUNE_INTERVAL_SECONDS": "retention_prune_interval_seconds",
     "APP_SIGNATURES_FILE": "app_signatures_file",
