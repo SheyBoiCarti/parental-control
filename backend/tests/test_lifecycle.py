@@ -294,3 +294,47 @@ async def test_configure_database_failure_does_not_close_unacquired_database(mon
         await app.initialize_auth()
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_close_global_database_when_configuration_fails(monkeypatch):
+    calls = []
+
+    def configure_database(config):
+        raise RuntimeError("configuration failed")
+
+    async def close_database():
+        calls.append("database")
+
+    monkeypatch.setattr("db.database.configure_database", configure_database)
+    monkeypatch.setattr("db.database.close_db", close_database)
+
+    app = ParentalControlApp(AppConfig())
+    with pytest.raises(RuntimeError, match="configuration failed"):
+        await app.run()
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_database_initialization_failure_closes_owned_database(monkeypatch):
+    calls = []
+
+    def configure_database(config):
+        calls.append("configured")
+
+    async def init_db():
+        raise RuntimeError("migration failed")
+
+    async def close_database():
+        calls.append("closed")
+
+    monkeypatch.setattr("db.database.configure_database", configure_database)
+    monkeypatch.setattr("db.database.init_db", init_db)
+    monkeypatch.setattr("db.database.close_db", close_database)
+
+    app = ParentalControlApp(AppConfig())
+    with pytest.raises(RuntimeError, match="migration failed"):
+        await app.initialize_auth()
+
+    assert calls == ["configured", "closed"]
