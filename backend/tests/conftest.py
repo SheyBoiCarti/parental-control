@@ -15,6 +15,9 @@ platform.uname()
 @pytest.fixture(autouse=True)
 def prevent_host_commands(monkeypatch: pytest.MonkeyPatch):
     """Portable tests may launch Python children, never host/network processes."""
+    if os.environ.get("PC_DISPOSABLE_NETNS") == "1":
+        yield
+        return
     real_run = subprocess.run
     real_popen = subprocess.Popen
 

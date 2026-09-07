@@ -232,3 +232,11 @@ Implementation is underway. Startup repairs are verified locally; broader authen
 - Active app rules whose signatures have disappeared remain stored and receive the durable diagnostic `Application signature is unavailable`; they are excluded from matching and cannot be reported as applied. Reloading a restored signature clears only this diagnostic and resumes matching.
 - Full suites pass 167 tests on Python 3.11 and Python 3.12. Fifteen Node22 frontend tests, ESLint and the production build pass. The existing approximately 614 kB bundle warning remains.
 - R22 still needs the final shipped-catalog/API enumeration assertion and browser acceptance; live external file watching is outside the explicit startup/reload design.
+
+## Isolated Linux kernel gate checkpoint
+
+- R23 partial: CI now has a separate Ubuntu 24.04 kernel-adapter job. It enters a new network and mount namespace with `unshare`, and the harness refuses to proceed if its network namespace matches PID 1. Only then does it enable the loopback device and create a uniquely scoped dummy interface.
+- Privileged tests exercise real HTB classes and readable directional counters, exact full-block iptables ownership/cleanup, and real NetfilterQueue binding before the content hook. Final qdisc/class/iptables inventories and JUnit results are uploaded even on failure; namespace exit provides an outer cleanup boundary.
+- Portable tests continue to reject host process/network operations unless the namespace harness sets its explicit sentinel. On this Windows workspace, the three Linux tests skip; shell syntax and workflow YAML parse successfully. No claim is made that the privileged tests passed until CI runs them on Linux.
+- README limitations now match implemented IPv4, DNS/SNI, QUIC, encrypted-DNS/VPN and catalog coverage. Verification commands and the exact Ubuntu/Python/Node support matrix are documented.
+- Still required for full R03/R08/R16/R23 acceptance: controlled client/appliance/gateway/upstream namespaces, actual DNS/TLS traffic, asymmetric throughput measurements, browser Playwright smoke tests, packet traces and CI run evidence.

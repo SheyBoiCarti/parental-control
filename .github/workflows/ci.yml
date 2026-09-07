@@ -42,3 +42,24 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm run test -- --run
+
+  linux-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/constraints.txt
+      - run: sudo apt-get update && sudo apt-get install -y iproute2 iptables libnetfilter-queue-dev
+      - run: python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt -c backend/constraints.txt
+      - name: Run isolated kernel adapters
+        run: sudo --preserve-env=PATH,GITHUB_WORKSPACE unshare --net --mount-proc bash scripts/run-linux-integration.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-kernel-artifacts
+          path: artifacts/linux-kernel/
+          retention-days: 14
