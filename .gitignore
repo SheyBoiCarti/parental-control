@@ -24,6 +24,5 @@ dist/
 *.key
 playwright-report/
 test-results/
-.superpowers/
 .worktrees/
 artifacts/

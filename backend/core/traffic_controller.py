@@ -3,8 +3,10 @@
 import asyncio
 import logging
 import json
+import os
 import re
 import ipaddress
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -32,13 +34,20 @@ class TrafficController:
     egress traffic: source IP for upload, destination IP for download.
     """
 
-    def __init__(self, interface: str, *, runner=None):
+    def __init__(self, interface: str, *, runner=None, ownership_file: Path | None = None):
         self._runner = runner if runner is not None else CommandRunner()
         self.interface = interface
         self._limits: Dict[str, BandwidthLimit] = {}  # MAC -> BandwidthLimit
         self._next_class_id = 10
         self._initialized = False
         self._owned_qdiscs = []
+        self._pending_removals: Dict[str, list[tuple[str, int]]] = {}
+        self._ownership_file = ownership_file
+
+    def set_ownership_file(self, path: Path) -> None:
+        if self._initialized:
+            raise RuntimeError("Cannot change traffic-control ownership after initialization")
+        self._ownership_file = path
 
     async def initialize(self):
         """Initialize tc qdisc and classes."""
@@ -50,28 +59,40 @@ class TrafficController:
         # Clean up any existing configuration
         await self._cleanup()
 
-        await self._assert_available(self.interface)
+        if await self._assert_available(self.interface):
+            self._owned_qdiscs.append((self.interface, "root", "1:", "htb"))
+            self._initialized = True
+            logger.info("Recovered owned traffic controller")
+            return
 
-        # Setup HTB qdisc on main interface (egress/upload)
-        await self._run_tc([
-            "qdisc", "add", "dev", self.interface,
-            "root", "handle", "1:", "htb", "default", "9999"
-        ])
+        try:
+            # Setup HTB qdisc on main interface (egress/upload)
+            await self._run_tc([
+                "qdisc", "add", "dev", self.interface,
+                "root", "handle", "1:", "htb", "default", "9999"
+            ])
 
-        # Root class with maximum bandwidth (1Gbps)
-        await self._run_tc([
-            "class", "add", "dev", self.interface,
-            "parent", "1:", "classid", "1:1",
-            "htb", "rate", "1000mbit", "ceil", "1000mbit"
-        ])
+            # Root class with maximum bandwidth (1Gbps)
+            await self._run_tc([
+                "class", "add", "dev", self.interface,
+                "parent", "1:", "classid", "1:1",
+                "htb", "rate", "1000mbit", "ceil", "1000mbit"
+            ])
 
-        # Default class for unlimited traffic
-        await self._run_tc([
-            "class", "add", "dev", self.interface,
-            "parent", "1:1", "classid", "1:9999",
-            "htb", "rate", "1000mbit", "ceil", "1000mbit"
-        ])
+            # Default class for unlimited traffic
+            await self._run_tc([
+                "class", "add", "dev", self.interface,
+                "parent", "1:1", "classid", "1:9999",
+                "htb", "rate", "1000mbit", "ceil", "1000mbit"
+            ])
 
+            self._record_ownership()
+        except BaseException:
+            try:
+                await self._cleanup()
+            except Exception:
+                logger.exception("Failed to roll back traffic-control initialization")
+            raise
         self._initialized = True
         logger.info("Traffic controller initialized")
 
@@ -85,11 +106,74 @@ class TrafficController:
         except (ValueError, TypeError) as error:
             raise RuntimeError("Cannot inspect existing traffic control") from error
 
-    async def _assert_available(self, interface):
+    async def _classes(self, interface):
+        result = await self._runner.run(["tc", "-j", "class", "show", "dev", interface])
+        try:
+            values = json.loads(result.stdout)
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("Cannot inspect existing traffic control classes") from error
+        if not isinstance(values, list) or any(not isinstance(item, dict) for item in values):
+            raise RuntimeError("Cannot inspect existing traffic control classes")
+        return values
+
+    def _owns_root(self) -> bool:
+        if self._ownership_file is None:
+            return False
+        try:
+            record = json.loads(self._ownership_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return False
+        return record == {"interface": self.interface, "handle": "1:", "kind": "htb"}
+
+    def _record_ownership(self) -> None:
+        if self._ownership_file is None:
+            return
+        self._ownership_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._ownership_file.with_suffix(self._ownership_file.suffix + ".tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump({"interface": self.interface, "handle": "1:", "kind": "htb"}, output)
+        os.replace(temporary, self._ownership_file)
+        self._ownership_file.chmod(0o600)
+
+    def _forget_ownership(self) -> None:
+        if self._ownership_file is not None:
+            self._ownership_file.unlink(missing_ok=True)
+
+    async def _assert_available(self, interface) -> bool:
+        qdiscs = []
         for qdisc in await self._qdiscs(interface):
             if qdisc.get("kind") == "noqueue" and qdisc.get("handle") == "0:":
                 continue
-            raise RuntimeError(f"Existing traffic control on {interface} must be preserved")
+            qdiscs.append(qdisc)
+        if not qdiscs:
+            self._forget_ownership()
+            return False
+        if len(qdiscs) == 1 and qdiscs[0].get("kind") == "htb" and qdiscs[0].get("handle") == "1:":
+            options = qdiscs[0].get("options", {})
+            default = options.get("default") if isinstance(options, dict) else None
+            classids = {item.get("classid") or item.get("handle") for item in await self._classes(interface)}
+            # Recovery cannot reconstruct ownership of per-device children
+            # from the durable root marker alone.  Refuse adoption while any
+            # child class or filter remains so startup never leaves an
+            # untracked limiter active or later deletes foreign state.
+            child_classes = classids - {"1:1", "1:9999", None}
+            if child_classes:
+                raise RuntimeError("Existing traffic control has untracked child classes; recovery refused")
+            filters = await self._runner.run(["tc", "-j", "filter", "show", "dev", interface, "parent", "1:"], check=False)
+            try:
+                filter_inventory = json.loads(filters.stdout or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError("Cannot inspect existing traffic control filters") from error
+            if not isinstance(filter_inventory, list) or filter_inventory:
+                raise RuntimeError("Existing traffic control has untracked child filters; recovery refused")
+            if (
+                self._owns_root()
+                and str(default) == "9999"
+                and {"1:1", "1:9999"}.issubset(classids)
+            ):
+                return True
+        raise RuntimeError(f"Existing traffic control on {interface} must be preserved")
 
     async def _cleanup(self):
         """Delete only queues created successfully by this controller instance."""
@@ -103,6 +187,8 @@ class TrafficController:
                         raise RuntimeError("Traffic control ownership changed; cleanup refused")
                     await self._runner.run(["tc", "qdisc", "del", "dev", interface, location, "handle", handle])
                 self._owned_qdiscs.remove((interface, location, handle, kind))
+                if interface == self.interface and handle == "1:" and kind == "htb":
+                    self._forget_ownership()
             except Exception as error:
                 failures.append(error)
         if failures:
@@ -134,6 +220,8 @@ class TrafficController:
     ) -> bool:
         """Apply independent upload/download classes to a known device address."""
         normalized_mac = normalize_mac(mac)
+        if normalized_mac in self._pending_removals and not await self.remove_bandwidth_limit(normalized_mac):
+            return False
         if ip_address is None:
             raise ValueError("Bandwidth enforcement requires the current device IPv4 address")
         address = str(ipaddress.IPv4Address(ip_address))
@@ -208,17 +296,30 @@ class TrafficController:
         limit = self._limits.get(normalized_mac)
         if limit is None:
             return True
+        resources = self._pending_removals.setdefault(
+            normalized_mac,
+            [
+                (kind, identifier)
+                for identifier in (limit.class_id, limit.class_id + 1)
+                for kind in ("filter", "class")
+            ],
+        )
         try:
-            for identifier in (limit.class_id, limit.class_id + 1):
-                await self._run_tc([
-                    "filter", "del", "dev", self.interface, "parent", "1:",
-                    "protocol", "ip", "pref", str(identifier), "handle", str(identifier), "flower",
-                ])
-                await self._run_tc([
-                    "class", "del", "dev", self.interface, "parent", "1:1",
-                    "classid", f"1:{identifier:x}",
-                ])
+            while resources:
+                resource_type, identifier = resources[0]
+                if resource_type == "filter":
+                    await self._run_tc([
+                        "filter", "del", "dev", self.interface, "parent", "1:",
+                        "protocol", "ip", "pref", str(identifier), "handle", str(identifier), "flower",
+                    ])
+                else:
+                    await self._run_tc([
+                        "class", "del", "dev", self.interface, "parent", "1:1",
+                        "classid", f"1:{identifier:x}",
+                    ])
+                resources.pop(0)
             self._limits.pop(normalized_mac)
+            self._pending_removals.pop(normalized_mac, None)
             return True
         except Exception:
             logger.exception("Failed to remove directional bandwidth limit")

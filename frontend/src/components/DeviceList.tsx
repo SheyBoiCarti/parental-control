@@ -116,14 +116,14 @@ export default function DeviceList({
                     )}
                   </span>
 
-                  {device.is_blocked && (
+                  {(device.is_blocked || blockingState === 'error') && (
                     <span className={`badge ${blockingState === 'applied' ? 'badge-blocked' : 'badge-offline'}`}>
                       <Shield size={12} className="mr-1" /> {blockingLabel}
                     </span>
                   )}
 
-                  {device.is_monitored && (
-                    <span className="badge badge-monitored">
+                  {(device.is_monitored || monitoringState === 'error') && (
+                    <span className={`badge ${monitoringState === 'error' ? 'badge-offline' : 'badge-monitored'}`}>
                       <Eye size={12} className="mr-1" /> {monitoringLabel}
                     </span>
                   )}

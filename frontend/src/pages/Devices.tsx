@@ -24,9 +24,9 @@ export default function Devices() {
   const [error, setError] = useState<string | null>(null)
   const { subscribe } = useWebSocket()
 
-  const fetchDevices = useCallback(async () => {
+  const fetchDevices = useCallback(async (preserveError = false) => {
     try {
-      setError(null)
+      if (!preserveError) setError(null)
       const data = await getDevices()
       setDevices(data.devices)
     } catch (e) {
@@ -108,36 +108,40 @@ export default function Devices() {
   const handleBlock = async (mac: string) => {
     try {
       await blockDevice(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to block device')
+    } finally {
+      await fetchDevices(true)
     }
   }
 
   const handleUnblock = async (mac: string) => {
     try {
       await unblockDevice(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to unblock device')
+    } finally {
+      await fetchDevices(true)
     }
   }
 
   const handleMonitor = async (mac: string) => {
     try {
       await startMonitoring(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start monitoring')
+    } finally {
+      await fetchDevices(true)
     }
   }
 
   const handleStopMonitor = async (mac: string) => {
     try {
       await stopMonitoring(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to stop monitoring')
+    } finally {
+      await fetchDevices(true)
     }
   }
 

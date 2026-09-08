@@ -1,5 +1,8 @@
 import importlib.util
+import os
 from pathlib import Path
+
+import pytest
 
 
 def installer_module():
@@ -25,21 +28,22 @@ def test_new_install_uses_template_and_selected_interface(tmp_path):
     assert installer_module().configure(config, template, "enp2s0")
     assert "NETWORK_INTERFACE=enp2s0" in config.read_text()
     assert "API_HOST=127.0.0.1" in config.read_text()
-    assert (config.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (config.stat().st_mode & 0o777) == 0o600
 
 
 def test_install_rejects_symlink_config(tmp_path):
+    if os.name == "nt":
+        pytest.skip("Windows symlink creation requires a developer privilege")
     target = tmp_path / "actual.env"
     target.write_text("TEST=1")
     link = tmp_path / ".env"
     link.symlink_to(target)
-    import pytest
     with pytest.raises(ValueError, match="regular file"):
         installer_module().configure(link, tmp_path / "unused", "eth0")
 
 
 def test_install_rejects_invalid_interface(tmp_path):
     config = tmp_path / ".env"
-    import pytest
     with pytest.raises(ValueError, match="Invalid network interface"):
         installer_module().configure(config, tmp_path / "unused", "invalid;rm -rf /")

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import Devices from './Devices'
@@ -60,4 +60,48 @@ it('shows desired blocking as pending instead of claiming the device is blocked'
 
   await screen.findByText('Block pending')
   expect(screen.queryByText('Blocked', { selector: 'span' })).toBeNull()
+})
+
+it('keeps a failed removal visible after desired blocking is cleared', async () => {
+  const timestamp = '2026-09-06T00:00:00Z'
+  const failed = { state: 'error', last_error: 'Block removal failed', updated_at: timestamp }
+  const inactive = { state: 'inactive', last_error: null, updated_at: timestamp }
+  const device = {
+    id: 4, mac_address: 'AA:BB:CC:DD:EE:04', friendly_name: 'Failed cleanup',
+    is_online: true, is_monitored: false, is_blocked: false, ip_address: '192.0.2.4',
+    hostname: null, vendor: null, first_seen: null, last_seen: null,
+    enforcement: { ...failed, components: { interception: failed, blocking: failed, content: inactive, bandwidth: inactive } },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ devices: [device], total: 1 }))))
+
+  render(<MemoryRouter><Devices /></MemoryRouter>)
+
+  await screen.findByText('Block failed')
+})
+
+it('reloads persisted cleanup failure after unblock returns an error', async () => {
+  const timestamp = '2026-09-06T00:00:00Z'
+  const applied = { state: 'applied', last_error: null, updated_at: timestamp }
+  const failed = { state: 'error', last_error: 'Block removal failed', updated_at: timestamp }
+  const inactive = { state: 'inactive', last_error: null, updated_at: timestamp }
+  const initiallyBlocked = {
+    id: 5, mac_address: 'AA:BB:CC:DD:EE:05', friendly_name: 'Unblock failure',
+    is_online: true, is_monitored: false, is_blocked: true, ip_address: '192.0.2.5',
+    hostname: null, vendor: null, first_seen: null, last_seen: null,
+    enforcement: { ...applied, components: { interception: applied, blocking: applied, content: inactive, bandwidth: inactive } },
+  }
+  const persistedFailure = {
+    ...initiallyBlocked, is_blocked: false,
+    enforcement: { ...failed, components: { interception: failed, blocking: failed, content: inactive, bandwidth: inactive } },
+  }
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ devices: [initiallyBlocked], total: 1 })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'Block removal failed' }), { status: 503 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ devices: [persistedFailure], total: 1 }))))
+
+  render(<MemoryRouter><Devices /></MemoryRouter>)
+  await screen.findByText('Unblock failure')
+  fireEvent.click(screen.getByTitle('Unblock device'))
+
+  expect(await screen.findByText('Block failed')).toBeTruthy()
 })

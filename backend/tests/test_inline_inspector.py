@@ -171,7 +171,7 @@ def test_allowed_tls_flow_is_cached_and_rule_refresh_invalidates_it():
     assert (invalidated.action, invalidated.reason) == ("drop", "policy_changed")
 
 
-def test_allowed_flow_decision_expires_instead_of_growing_forever():
+def test_allowed_tls_flow_stays_accepted_until_connection_teardown():
     now = [0.0]
     engine = InlineInspector(
         Matcher(), clock=lambda: now[0], decision_ttl_seconds=300
@@ -186,7 +186,33 @@ def test_allowed_flow_decision_expires_instead_of_growing_forever():
     now[0] = 299
     assert engine.inspect(application_data).action == "accept"
     now[0] = 301
-    assert engine.inspect(application_data).action == "hold"
+    assert engine.inspect(application_data).action == "accept"
+
+
+def test_allowed_tls_decisions_have_a_hard_capacity_limit():
+    engine = InlineInspector(Matcher(), max_flows=1)
+    engine.set_device(IP, MAC)
+    first = PacketView(IP, "198.51.100.10", 50000, 443, "tcp", tls_client_hello("allowed.example"), sequence=1000)
+    second = PacketView(IP, "198.51.100.11", 50001, 443, "tcp", tls_client_hello("allowed.example"), sequence=2000)
+
+    assert engine.inspect(first).action == "accept"
+    verdict = engine.inspect(second)
+    assert (verdict.action, verdict.reason) == ("drop", "inspection_queue_full")
+
+
+def test_tcp_dns_packet_with_any_blocked_frame_is_dropped():
+    allowed = bytes(DNS(id=8, rd=1, qd=DNSQR(qname="allowed.example.")))
+    blocked = bytes(DNS(id=9, rd=1, qd=DNSQR(qname="blocked.example.")))
+    payload = (
+        struct.pack("!H", len(allowed)) + allowed
+        + struct.pack("!H", len(blocked)) + blocked
+    )
+
+    verdict = inspector().inspect(PacketView(
+        IP, "192.0.2.53", 50000, 53, "tcp", payload, sequence=1000
+    ))
+
+    assert (verdict.action, verdict.domain) == ("drop", "blocked.example")
 
 
 def test_tcp_teardown_clears_cached_allow_decision():
