@@ -162,6 +162,15 @@ class InlineInspector:
                     reason="connection_closed_before_inspection",
                 )
             return InspectionVerdict("accept")
+        # A fresh client SYN can reuse the same 4-tuple after the previous
+        # connection ended.  Never inherit that connection's allow decision.
+        if packet.tcp_flags & 0x02 and not packet.tcp_flags & 0x10:
+            self._allowed_flows.pop(key, None)
+            # A few capture paths mark every client segment as SYN while a
+            # split ClientHello is being assembled; retain an in-progress
+            # flow, but discard any completed predecessor.
+            if key not in self._flows:
+                self._flows.pop(key, None)
         if packet.dst_port == 443 and key in self._allowed_flows:
             self._allowed_flows[key] = self._clock()
             return InspectionVerdict("accept", protocol="tls_sni")

@@ -153,6 +153,20 @@ class TrafficController:
             options = qdiscs[0].get("options", {})
             default = options.get("default") if isinstance(options, dict) else None
             classids = {item.get("classid") or item.get("handle") for item in await self._classes(interface)}
+            # Recovery cannot reconstruct ownership of per-device children
+            # from the durable root marker alone.  Refuse adoption while any
+            # child class or filter remains so startup never leaves an
+            # untracked limiter active or later deletes foreign state.
+            child_classes = classids - {"1:1", "1:9999", None}
+            if child_classes:
+                raise RuntimeError("Existing traffic control has untracked child classes; recovery refused")
+            filters = await self._runner.run(["tc", "-j", "filter", "show", "dev", interface, "parent", "1:"], check=False)
+            try:
+                filter_inventory = json.loads(filters.stdout or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError("Cannot inspect existing traffic control filters") from error
+            if not isinstance(filter_inventory, list) or filter_inventory:
+                raise RuntimeError("Existing traffic control has untracked child filters; recovery refused")
             if (
                 self._owns_root()
                 and str(default) == "9999"

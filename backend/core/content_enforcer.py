@@ -182,6 +182,9 @@ class ContentEnforcer:
                 specs.remove(spec)
         except Exception:
             logger.exception("Failed to remove content queue rules")
+            # The stored fingerprint must not remain a cache hit after a
+            # partial deletion.  A retry must reinstall the complete policy.
+            self._devices[normalized_mac] = (address, ("partial-removal",), specs)
             return False
         self._devices.pop(normalized_mac, None)
         self._inspector.remove_device(address)
