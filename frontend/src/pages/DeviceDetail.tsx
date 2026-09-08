@@ -123,30 +123,41 @@ export default function DeviceDetail() {
 
   const handleCreateBandwidthRule = async (download: number, upload: number) => {
     if (!device) return
-
-    await createBandwidthRule(device.mac_address, download, upload)
-    await fetchData()
+    try {
+      await createBandwidthRule(device.mac_address, download, upload)
+    } finally {
+      await fetchData()
+    }
   }
 
   const handleCreateAppBlockRule = async (app: string) => {
     if (!device) return
 
-    await createAppBlockRule(device.mac_address, app)
-    await fetchData()
+    try {
+      await createAppBlockRule(device.mac_address, app)
+    } finally {
+      await fetchData()
+    }
   }
 
   const handleCreateDomainBlockRule = async (domain: string) => {
     if (!device) return
 
-    await createDomainBlockRule(device.mac_address, domain)
-    await fetchData()
+    try {
+      await createDomainBlockRule(device.mac_address, domain)
+    } finally {
+      await fetchData()
+    }
   }
 
   const handleDeleteRule = async (ruleId: number) => {
     if (!device) return
 
-    await deleteRule(device.mac_address, ruleId)
-    await fetchData()
+    try {
+      await deleteRule(device.mac_address, ruleId)
+    } finally {
+      await fetchData()
+    }
   }
 
   if (isLoading) {

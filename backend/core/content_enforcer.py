@@ -177,8 +177,9 @@ class ContentEnforcer:
             return True
         address, _, specs = existing
         try:
-            for spec in reversed(specs):
+            for spec in reversed(list(specs)):
                 await self._runner.run(["iptables", "-D", self._chain, *spec])
+                specs.remove(spec)
         except Exception:
             logger.exception("Failed to remove content queue rules")
             return False

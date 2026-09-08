@@ -181,3 +181,37 @@ async def test_bandwidth_only_rule_change_does_not_reinstall_content_rules():
         if call[:3] == ["iptables", "-A", "PARENTAL_CONTENT"]
     ]
     assert len(additions) == 3
+
+
+@pytest.mark.asyncio
+async def test_partial_content_removal_retries_only_rules_still_present():
+    calls = []
+
+    class FailOnceRunner(Runner):
+        def __init__(self):
+            super().__init__(calls)
+            self.deletions = 0
+            self.failed = False
+
+        async def run(self, argv, **kwargs):
+            if argv[:3] == ["iptables", "-D", "PARENTAL_CONTENT"]:
+                self.deletions += 1
+                if self.deletions == 2 and not self.failed:
+                    self.failed = True
+                    raise RuntimeError("temporary failure")
+            return await super().run(argv, **kwargs)
+
+    enforcer = ContentEnforcer(
+        "eth0", InlineInspector(Matcher()), runner=FailOnceRunner(), worker=Worker(calls)
+    )
+    await enforcer.initialize()
+    assert await enforcer.apply_device("AA:BB:CC:DD:EE:35", "192.0.2.35", [])
+
+    assert not await enforcer.remove_device("AA:BB:CC:DD:EE:35")
+    first_removed = [
+        call for call in calls
+        if call[:3] == ["iptables", "-D", "PARENTAL_CONTENT"]
+    ][0]
+    assert await enforcer.remove_device("AA:BB:CC:DD:EE:35")
+    deletions = [call for call in calls if call[:3] == ["iptables", "-D", "PARENTAL_CONTENT"]]
+    assert deletions.count(first_removed) == 1

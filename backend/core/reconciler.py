@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
@@ -61,11 +62,24 @@ class EnforcementReconciler:
         self._content = content_enforcer
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def reconcile(self, mac: str) -> ReconcileResult:
+    def _lock_for(self, mac: str) -> tuple[str, asyncio.Lock]:
         normalized_mac = normalize_mac(mac)
-        lock = self._locks.setdefault(normalized_mac, asyncio.Lock())
+        return normalized_mac, self._locks.setdefault(normalized_mac, asyncio.Lock())
+
+    @asynccontextmanager
+    async def mutation(self, mac: str):
+        """Serialize intent writes and their reconciliation as one operation."""
+        normalized_mac, lock = self._lock_for(mac)
         async with lock:
+            yield normalized_mac
+
+    async def reconcile(self, mac: str) -> ReconcileResult:
+        async with self.mutation(mac) as normalized_mac:
             return await self._reconcile_locked(normalized_mac)
+
+    async def reconcile_mutation(self, mac: str) -> ReconcileResult:
+        """Reconcile while the caller holds :meth:`mutation` for this MAC."""
+        return await self._reconcile_locked(normalize_mac(mac))
 
     async def reset_runtime_state(self) -> None:
         """Invalidate every result before startup re-verifies kernel state."""

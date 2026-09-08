@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import HTTPException, Request, Security
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from core.auth_service import _hash, _verify
+from core.auth_service import AuthenticationError, _hash, _verify
 
 COOKIE_NAME = "pc_session"
 security = HTTPBasic(auto_error=False)
@@ -50,4 +50,17 @@ async def get_current_user(
             if not secrets.compare_digest(csrf.encode(), identity.csrf_token.encode()):
                 raise HTTPException(403, "Invalid CSRF token")
         return identity.username
-    return (await service.authenticate(credentials.username, credentials.password)).username
+    address = request.client.host if request.client else "unknown"
+    limiter = request.app.state.login_limiter
+    reservation = limiter.reserve(address)
+    try:
+        identity = await service.authenticate(credentials.username, credentials.password)
+    except AuthenticationError:
+        # Keep the reservation: failed Basic attempts share the same limit as
+        # browser logins and cannot become a bcrypt-work bypass.
+        raise
+    except BaseException:
+        limiter.release(address, reservation)
+        raise
+    limiter.release(address, reservation)
+    return identity.username

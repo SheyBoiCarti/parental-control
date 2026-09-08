@@ -1,5 +1,6 @@
 """Device rules API routes."""
 
+from contextlib import asynccontextmanager
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -152,6 +153,32 @@ def _validate_enforcement_target(state, device: Device, mac: str) -> None:
         raise HTTPException(422, str(error)) from error
 
 
+@asynccontextmanager
+async def _device_mutation(reconciler, mac: str):
+    """Use the reconciler's per-device lock for the full HTTP mutation."""
+    mutation = getattr(reconciler, "mutation", None)
+    if mutation is None:
+        # Lightweight route fakes used by unit tests predate mutation locking.
+        yield
+        return
+    async with mutation(mac):
+        yield
+
+
+async def _reconcile_mutation(reconciler, mac: str):
+    method = getattr(reconciler, "reconcile_mutation", reconciler.reconcile)
+    return await method(mac)
+
+
+async def _save_and_reconcile(state, mac: str, device: Device, rule_type: str, value: dict):
+    async with _device_mutation(state.reconciler, mac):
+        db_rule = await save_rule(device.id, rule_type, value)
+        if rule_type in {"block_app", "block_domain"}:
+            await state.content_blocker._load_device_rules()
+        result = await _reconcile_mutation(state.reconciler, mac)
+        return db_rule, result
+
+
 @router.get("", response_model=RuleListResponse)
 async def list_rules(mac: str, user: str = Depends(get_current_user)):
     """Get all rules for a device."""
@@ -182,9 +209,10 @@ async def create_bandwidth_rule(
     device = await get_device_by_mac(mac)
     _validate_enforcement_target(state, device, mac)
 
-    db_rule = await save_rule(device.id, "bandwidth", {"download_kbps": rule.download_kbps, "upload_kbps": rule.upload_kbps})
-
-    result = await state.reconciler.reconcile(mac)
+    db_rule, result = await _save_and_reconcile(
+        state, mac, device, "bandwidth",
+        {"download_kbps": rule.download_kbps, "upload_kbps": rule.upload_kbps},
+    )
     payload = _rule_payload(db_rule, result)
 
     # Broadcast update
@@ -218,11 +246,9 @@ async def create_app_block_rule(
             detail=f"Unknown app: {rule.app}. Available: {list(available_apps.keys())}"
         )
 
-    db_rule = await save_rule(device.id, "block_app", {"app": rule.app})
-
-    # Apply block
-    await state.content_blocker._load_device_rules()
-    result = await state.reconciler.reconcile(mac)
+    db_rule, result = await _save_and_reconcile(
+        state, mac, device, "block_app", {"app": rule.app}
+    )
     payload = _rule_payload(db_rule, result)
 
     # Broadcast update
@@ -248,11 +274,9 @@ async def create_domain_block_rule(
     device = await get_device_by_mac(mac)
     _validate_enforcement_target(state, device, mac)
 
-    db_rule = await save_rule(device.id, "block_domain", {"domain": rule.domain})
-
-    # Apply block
-    await state.content_blocker._load_device_rules()
-    result = await state.reconciler.reconcile(mac)
+    db_rule, result = await _save_and_reconcile(
+        state, mac, device, "block_domain", {"domain": rule.domain}
+    )
     payload = _rule_payload(db_rule, result)
 
     # Broadcast update
@@ -277,50 +301,51 @@ async def delete_rule(
     state = get_app_state()
     device = await get_device_by_mac(mac)
 
-    async with get_session() as session:
-        result = await session.execute(
-            select(DeviceRule).where(
-                DeviceRule.id == rule_id,
-                DeviceRule.device_id == device.id
-            )
-        )
-        rule = result.scalar_one_or_none()
-
-        if not rule:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Rule not found: {rule_id}"
-            )
-
-        rule_type = rule.rule_type
-        rule.is_active = False
-        await session.commit()
-
-    if rule_type in {"block_app", "block_domain"}:
-        await state.content_blocker._load_device_rules()
-    result = await state.reconciler.reconcile(mac)
-
-    if result.state == "error":
+    async with _device_mutation(state.reconciler, mac):
         async with get_session() as session:
-            retained = (await session.execute(
+            result = await session.execute(
                 select(DeviceRule).where(
                     DeviceRule.id == rule_id,
-                    DeviceRule.device_id == device.id,
+                    DeviceRule.device_id == device.id
                 )
-            )).scalar_one_or_none()
-            if retained is not None:
-                retained.is_active = True
-                await session.commit()
+            )
+            rule = result.scalar_one_or_none()
+
+            if not rule:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Rule not found: {rule_id}"
+                )
+
+            rule_type = rule.rule_type
+            rule.is_active = False
+            await session.commit()
+
         if rule_type in {"block_app", "block_domain"}:
             await state.content_blocker._load_device_rules()
-        _apply_http_result(result, response)
+        result = await _reconcile_mutation(state.reconciler, mac)
 
-    async with get_session() as session:
-        await session.execute(delete(DeviceRule).where(
-            DeviceRule.id == rule_id,
-            DeviceRule.device_id == device.id,
-        ))
-        await session.commit()
+        if result.state == "error":
+            async with get_session() as session:
+                retained = (await session.execute(
+                    select(DeviceRule).where(
+                        DeviceRule.id == rule_id,
+                        DeviceRule.device_id == device.id,
+                    )
+                )).scalar_one_or_none()
+                if retained is not None:
+                    retained.is_active = True
+                    await session.commit()
+            if rule_type in {"block_app", "block_domain"}:
+                await state.content_blocker._load_device_rules()
+            _apply_http_result(result, response)
+
+        async with get_session() as session:
+            await session.execute(delete(DeviceRule).where(
+                DeviceRule.id == rule_id,
+                DeviceRule.device_id == device.id,
+            ))
+            await session.commit()
 
     _apply_http_result(result, response)
 

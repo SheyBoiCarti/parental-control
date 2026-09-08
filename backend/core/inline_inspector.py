@@ -123,9 +123,6 @@ class InlineInspector:
                 key,
                 InspectionVerdict("drop", protocol=protocol, reason="inspection_timeout"),
             ))
-        for key, created_at in list(self._allowed_flows.items()):
-            if now - created_at > self._decision_ttl:
-                self._allowed_flows.pop(key, None)
         return expired
 
     def inspect(self, packet: PacketView) -> InspectionVerdict:
@@ -166,11 +163,14 @@ class InlineInspector:
                 )
             return InspectionVerdict("accept")
         if packet.dst_port == 443 and key in self._allowed_flows:
-            created_at = self._allowed_flows[key]
-            if self._clock() - created_at <= self._decision_ttl:
-                return InspectionVerdict("accept", protocol="tls_sni")
-            self._allowed_flows.pop(key, None)
+            self._allowed_flows[key] = self._clock()
+            return InspectionVerdict("accept", protocol="tls_sni")
         if not packet.payload:
+            if key in self._flows:
+                return InspectionVerdict(
+                    "hold",
+                    protocol="dns_tcp" if packet.dst_port == 53 else "tls_sni",
+                )
             return InspectionVerdict("accept")
         if packet.sequence is None:
             return InspectionVerdict(
@@ -193,16 +193,10 @@ class InlineInspector:
         data = flow.assembled()
 
         if packet.dst_port == 53:
-            if len(data) < 2:
-                return InspectionVerdict("hold", protocol="dns_tcp")
-            length = struct.unpack("!H", data[:2])[0]
-            if length < 12:
+            verdict = self._tcp_dns_verdict(mac, data)
+            if verdict.action != "hold":
                 self._flows.pop(key, None)
-                return InspectionVerdict("drop", protocol="dns_tcp", reason="malformed_dns")
-            if len(data) < length + 2:
-                return InspectionVerdict("hold", protocol="dns_tcp")
-            self._flows.pop(key, None)
-            return self._dns_verdict(mac, data[2:2 + length], "dns_tcp")
+            return verdict
 
         status, domain = _parse_tls_sni(data)
         if status == "incomplete":
@@ -211,12 +205,20 @@ class InlineInspector:
         if status == "malformed":
             return InspectionVerdict("drop", protocol="tls_sni", reason="malformed_tls")
         if domain is None:
-            self._allowed_flows[key] = self._clock()
-            return InspectionVerdict("accept", protocol="tls_sni")
+            if self._remember_allowed_flow(key):
+                return InspectionVerdict("accept", protocol="tls_sni")
+            return InspectionVerdict("drop", protocol="tls_sni", reason="inspection_queue_full")
         verdict = self._domain_verdict(mac, domain, "tls_sni")
         if verdict.action == "accept":
-            self._allowed_flows[key] = self._clock()
+            if not self._remember_allowed_flow(key):
+                return InspectionVerdict("drop", protocol="tls_sni", reason="inspection_queue_full")
         return verdict
+
+    def _remember_allowed_flow(self, key: tuple) -> bool:
+        if key not in self._allowed_flows and len(self._allowed_flows) >= self._max_flows:
+            return False
+        self._allowed_flows[key] = self._clock()
+        return True
 
     def _dns_verdict(self, mac: str, payload: bytes, protocol: str) -> InspectionVerdict:
         try:
@@ -231,6 +233,25 @@ class InlineInspector:
         except Exception:
             return InspectionVerdict("drop", protocol=protocol, reason="malformed_dns")
         return self._domain_verdict(mac, domain, protocol)
+
+    def _tcp_dns_verdict(self, mac: str, data: bytes) -> InspectionVerdict:
+        """Evaluate every complete DNS-over-TCP frame before releasing bytes."""
+        position = 0
+        last = InspectionVerdict("hold", protocol="dns_tcp")
+        while position < len(data):
+            if len(data) - position < 2:
+                return InspectionVerdict("hold", protocol="dns_tcp")
+            length = struct.unpack("!H", data[position:position + 2])[0]
+            if length < 12:
+                return InspectionVerdict("drop", protocol="dns_tcp", reason="malformed_dns")
+            end = position + 2 + length
+            if end > len(data):
+                return InspectionVerdict("hold", protocol="dns_tcp")
+            last = self._dns_verdict(mac, data[position + 2:end], "dns_tcp")
+            if last.action == "drop":
+                return last
+            position = end
+        return last
 
     def _domain_verdict(self, mac: str, domain: str, protocol: str) -> InspectionVerdict:
         if hasattr(self._matcher, "match"):

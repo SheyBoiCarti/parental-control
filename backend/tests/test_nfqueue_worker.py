@@ -138,6 +138,26 @@ def test_worker_decodes_tcp_teardown_flags_and_drops_undecided_flow():
     assert events[0].reason == "connection_closed_before_inspection"
 
 
+def test_worker_keeps_undecided_tls_packets_held_when_an_empty_ack_arrives():
+    inspected = engine()
+    partial = QueuedPacket(bytes(
+        IP(src=DEVICE_IP, dst="198.51.100.10")
+        / TCP(sport=50000, dport=443, seq=1000)
+        / Raw(b"\x16\x03")
+    ))
+    ack = QueuedPacket(bytes(
+        IP(src=DEVICE_IP, dst="198.51.100.10")
+        / TCP(sport=50000, dport=443, seq=1002, flags="A")
+    ))
+    worker = NFQueueWorker(inspected, lambda event: True)
+
+    worker.handle_packet(partial)
+    worker.handle_packet(ack)
+
+    assert partial.retained and partial.verdict is None
+    assert ack.retained and ack.verdict is None
+
+
 class Queue:
     def __init__(self):
         self.bound = None

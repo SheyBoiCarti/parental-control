@@ -10,6 +10,30 @@ from core.reconciler import EnforcementReconciler
 from db.models import Base, Device, DeviceEnforcement, DeviceRule
 
 
+@pytest.mark.asyncio
+async def test_device_mutation_lock_serializes_intent_changes():
+    reconciler = EnforcementReconciler(None, None, None, None)
+    entered = []
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def change(name, wait=False):
+        async with reconciler.mutation("AA:BB:CC:DD:EE:42"):
+            entered.append(name)
+            if wait:
+                first_entered.set()
+                await release_first.wait()
+
+    first = asyncio.create_task(change("delete", wait=True))
+    await first_entered.wait()
+    second = asyncio.create_task(change("save"))
+    await asyncio.sleep(0)
+    assert entered == ["delete"]
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert entered == ["delete", "save"]
+
+
 class FakeARP:
     def __init__(self):
         self.targets = {}

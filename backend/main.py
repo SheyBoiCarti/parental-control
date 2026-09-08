@@ -67,6 +67,9 @@ def build_app_state(
         gateway_ip=config.gateway_ip,
         network_subnet=config.network_subnet,
     )
+    traffic_controller = component_types["TrafficController"](config.network_interface)
+    if hasattr(traffic_controller, "set_ownership_file"):
+        traffic_controller.set_ownership_file(config.data_dir / "traffic-controller-owner.json")
     return AppState(
         device_manager=device_manager,
         arp_spoofer=component_types["ARPSpoofer"](
@@ -78,7 +81,7 @@ def build_app_state(
             network_subnet=config.network_subnet,
         ),
         packet_analyzer=component_types["PacketAnalyzer"](config.network_interface),
-        traffic_controller=component_types["TrafficController"](config.network_interface),
+        traffic_controller=traffic_controller,
         content_blocker=component_types["ContentBlocker"](),
         device_blocker=component_types["DeviceBlocker"](config.network_interface),
     )

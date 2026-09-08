@@ -117,6 +117,8 @@ async def test_bad_origin_and_failed_login_rate_limit(auth_service):
         response = await client.post("/api/auth/login", json={"username": "admin", "password": "incorrect"})
         assert response.status_code == 429
         assert int(response.headers["Retry-After"]) > 0
+        response = await client.get("/api/settings", auth=("admin", "incorrect"))
+        assert response.status_code == 429
 
 
 def test_websocket_requires_session_origin_and_closes_on_logout(tmp_path):

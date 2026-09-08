@@ -108,36 +108,40 @@ export default function Devices() {
   const handleBlock = async (mac: string) => {
     try {
       await blockDevice(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to block device')
+    } finally {
+      await fetchDevices()
     }
   }
 
   const handleUnblock = async (mac: string) => {
     try {
       await unblockDevice(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to unblock device')
+    } finally {
+      await fetchDevices()
     }
   }
 
   const handleMonitor = async (mac: string) => {
     try {
       await startMonitoring(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start monitoring')
+    } finally {
+      await fetchDevices()
     }
   }
 
   const handleStopMonitor = async (mac: string) => {
     try {
       await stopMonitoring(mac)
-      await fetchDevices()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to stop monitoring')
+    } finally {
+      await fetchDevices()
     }
   }
 
