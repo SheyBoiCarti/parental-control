@@ -233,7 +233,7 @@ sudo --preserve-env=PATH,GITHUB_WORKSPACE \
   unshare --net --mount-proc bash scripts/run-linux-integration.sh
 ```
 
-That kernel job proves real `tc`, iptables and NFQUEUE adapter ownership in an ephemeral namespace. It does not represent every Linux distribution or network topology; controlled end-to-end throughput and protocol traffic acceptance remains tracked in [the remediation results](docs/remediation-results.md).
+That kernel job proves real `tc`, iptables and NFQUEUE adapter ownership in an ephemeral namespace. It does not represent every Linux distribution or network topology; controlled end-to-end throughput and protocol traffic acceptance still requires testing on the target network topology.
 
 ## Troubleshooting
 

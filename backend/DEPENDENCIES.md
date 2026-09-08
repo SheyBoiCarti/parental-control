@@ -16,4 +16,4 @@ uv pip compile backend/requirements.txt backend/requirements-dev.txt --universal
 
 Universal resolution retains platform markers (including Linux uvloop). Validate the resulting constraints on both supported Python versions; a successful Windows installation is not evidence that Linux-only dependencies work. Changes to inputs require regenerating the output and running the complete matrix. Queue binding/system dependencies and privileged integration validation will be added with the inline enforcement stage.
 
-The frontend uses `frontend/package-lock.json`; install with `npm ci` on Node 22. See `docs/remediation-results.md` for actual tested versions and commands.
+The frontend uses `frontend/package-lock.json`; install with `npm ci` on Node 22.
