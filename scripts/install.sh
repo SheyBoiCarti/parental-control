@@ -122,21 +122,40 @@ echo -e "${GREEN}Installing systemd service...${NC}"
 cat > /etc/systemd/system/parental-control.service << EOF
 [Unit]
 Description=Parental Control Network Manager
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
+Group=root
 WorkingDirectory=$INSTALL_DIR/backend
 Environment=PATH=$INSTALL_DIR/backend/venv/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
 ExecStart="$INSTALL_DIR/backend/venv/bin/python" "$INSTALL_DIR/backend/main.py" --env-file "$INSTALL_DIR/backend/.env"
 Restart=on-failure
 RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=parental-control
 
 # Security
 NoNewPrivileges=false
 ProtectSystem=false
 ProtectHome=false
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Network capabilities
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

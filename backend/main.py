@@ -70,16 +70,19 @@ def build_app_state(
     traffic_controller = component_types["TrafficController"](config.network_interface)
     if hasattr(traffic_controller, "set_ownership_file"):
         traffic_controller.set_ownership_file(config.data_dir / "traffic-controller-owner.json")
+    arp_spoofer = component_types["ARPSpoofer"](
+        interface=config.network_interface,
+        gateway_ip=config.gateway_ip,
+        gateway_mac=gateway_mac,
+        local_mac=local_mac,
+        local_ip=local_ip,
+        network_subnet=config.network_subnet,
+    )
+    if hasattr(arp_spoofer, "set_spoof_interval"):
+        arp_spoofer.set_spoof_interval(config.arp_spoof_interval)
     return AppState(
         device_manager=device_manager,
-        arp_spoofer=component_types["ARPSpoofer"](
-            interface=config.network_interface,
-            gateway_ip=config.gateway_ip,
-            gateway_mac=gateway_mac,
-            local_mac=local_mac,
-            local_ip=local_ip,
-            network_subnet=config.network_subnet,
-        ),
+        arp_spoofer=arp_spoofer,
         packet_analyzer=component_types["PacketAnalyzer"](config.network_interface),
         traffic_controller=traffic_controller,
         content_blocker=component_types["ContentBlocker"](),
@@ -192,7 +195,12 @@ class ParentalControlApp:
                 self.state.device_blocker.initialize,
                 self.state.device_blocker.shutdown,
             )
-            inspector = InlineInspector(self.state.content_blocker)
+            inspector = InlineInspector(
+                self.state.content_blocker,
+                inspection_budget=effective_config.inspection_budget_bytes,
+                deadline_seconds=effective_config.inspection_deadline_seconds,
+                max_flows=effective_config.max_undecided_flows,
+            )
             worker = NFQueueWorker(
                 inspector,
                 lambda event: self.event_worker.submit(event) if self.event_worker else False,
@@ -255,11 +263,13 @@ class ParentalControlApp:
                 from api.websocket import ws_manager
 
                 assert self.state is not None
+                payloads = []
                 for device in devices:
-                    await self.state.reconciler.reconcile(device.mac_address)
+                    enforcement = await self.state.reconciler.reconcile(device.mac_address)
+                    payloads.append(device.to_dict() | {"enforcement": enforcement.to_dict()})
                 mapping = {device.ip_address: device.mac_address for device in devices if device.ip_address}
                 self.state.packet_analyzer.set_ip_mac_mapping(mapping)
-                await ws_manager.broadcast_devices_list([device.to_dict() for device in devices])
+                await ws_manager.broadcast_devices_list(payloads)
 
             self.state.device_manager.add_online_callback(on_device_scan)
             await self._start_network_enforcement()

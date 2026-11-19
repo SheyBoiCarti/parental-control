@@ -58,7 +58,12 @@ class ARPSpoofer:
         self._spoof_task: Optional[asyncio.Task] = None
         self._running = False
         self._original_forwarding: Optional[bool] = None
-        self._spoof_interval = 2  # seconds between ARP packets
+        self._spoof_interval: float = 2.0  # seconds between ARP packets
+
+    def set_spoof_interval(self, interval: float) -> None:
+        if interval <= 0:
+            raise ValueError("ARP spoof interval must be positive")
+        self._spoof_interval = float(interval)
 
     @property
     def active_targets(self) -> Set[str]:
@@ -217,7 +222,7 @@ class ARPSpoofer:
         async def spoof_loop():
             while self._running:
                 for target in list(self._targets.values()):
-                    self._send_spoof_packets(target)
+                    await asyncio.to_thread(self._send_spoof_packets, target)
 
                 await asyncio.sleep(self._spoof_interval)
 
@@ -236,9 +241,9 @@ class ARPSpoofer:
                 pass
             self._spoof_task = None
 
-        # Restore ARP for all targets
+        # Restore ARP for all targets without blocking the event loop
         for target in list(self._targets.values()):
-            self._restore_arp(target)
+            await asyncio.to_thread(self._restore_arp, target)
 
         self._targets.clear()
 

@@ -1,7 +1,7 @@
 """Settings API routes."""
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from fastapi import APIRouter, HTTPException, Depends, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -81,12 +81,14 @@ async def get_setting(key: str, user: str = Depends(get_current_user)):
 @router.put("/{key}")
 async def update_setting(
     key: str,
-    value: str,
+    value: str = Query(..., max_length=4096),
     user: str = Depends(get_current_user)
 ):
     """Update a setting."""
     if reserved_key(key):
         raise HTTPException(422, "Reserved setting key")
+    if not key or len(key) > 100:
+        raise HTTPException(422, "Setting key must be between 1 and 100 characters")
     async with get_session() as session:
         result = await session.execute(
             select(Setting).where(Setting.key == key)

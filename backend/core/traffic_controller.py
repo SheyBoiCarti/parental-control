@@ -39,6 +39,8 @@ class TrafficController:
         self.interface = interface
         self._limits: Dict[str, BandwidthLimit] = {}  # MAC -> BandwidthLimit
         self._next_class_id = 10
+        self._free_class_ids: list[int] = []
+        self._owned_class_ids: set[int] = set()
         self._initialized = False
         self._owned_qdiscs = []
         self._pending_removals: Dict[str, list[tuple[str, int]]] = {}
@@ -116,14 +118,34 @@ class TrafficController:
             raise RuntimeError("Cannot inspect existing traffic control classes")
         return values
 
-    def _owns_root(self) -> bool:
+    def _read_ownership_record(self) -> dict | None:
         if self._ownership_file is None:
-            return False
+            return None
         try:
             record = json.loads(self._ownership_file.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
-            return False
-        return record == {"interface": self.interface, "handle": "1:", "kind": "htb"}
+            return None
+        if not isinstance(record, dict):
+            return None
+        if (
+            record.get("interface") != self.interface
+            or record.get("handle") != "1:"
+            or record.get("kind") != "htb"
+        ):
+            return None
+        return record
+
+    def _owns_root(self) -> bool:
+        return self._read_ownership_record() is not None
+
+    def _recorded_owned_class_ids(self) -> set[int]:
+        record = self._read_ownership_record()
+        if record is None:
+            return set()
+        raw = record.get("owned_class_ids", [])
+        if not isinstance(raw, list):
+            return set()
+        return {item for item in raw if type(item) is int and 10 <= item < 0x9000}
 
     def _record_ownership(self) -> None:
         if self._ownership_file is None:
@@ -131,8 +153,14 @@ class TrafficController:
         self._ownership_file.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._ownership_file.with_suffix(self._ownership_file.suffix + ".tmp")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        payload = {
+            "interface": self.interface,
+            "handle": "1:",
+            "kind": "htb",
+            "owned_class_ids": sorted(self._owned_class_ids),
+        }
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump({"interface": self.interface, "handle": "1:", "kind": "htb"}, output)
+            json.dump(payload, output)
         os.replace(temporary, self._ownership_file)
         self._ownership_file.chmod(0o600)
 
@@ -153,25 +181,47 @@ class TrafficController:
             options = qdiscs[0].get("options", {})
             default = options.get("default") if isinstance(options, dict) else None
             classids = {item.get("classid") or item.get("handle") for item in await self._classes(interface)}
-            # Recovery cannot reconstruct ownership of per-device children
-            # from the durable root marker alone.  Refuse adoption while any
-            # child class or filter remains so startup never leaves an
-            # untracked limiter active or later deletes foreign state.
-            child_classes = classids - {"1:1", "1:9999", None}
-            if child_classes:
+            owned_root = self._owns_root()
+            recorded_ids = self._recorded_owned_class_ids() if owned_root else set()
+            allowed_child_handles = {f"1:{cid:x}" for cid in recorded_ids}
+            child_classes = {str(item).lower() for item in (classids - {"1:1", "1:9999", None})}
+            untracked_classes = child_classes - allowed_child_handles
+            if untracked_classes:
                 raise RuntimeError("Existing traffic control has untracked child classes; recovery refused")
             filters = await self._runner.run(["tc", "-j", "filter", "show", "dev", interface, "parent", "1:"], check=False)
             try:
                 filter_inventory = json.loads(filters.stdout or "[]")
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise RuntimeError("Cannot inspect existing traffic control filters") from error
-            if not isinstance(filter_inventory, list) or filter_inventory:
+            if not isinstance(filter_inventory, list):
                 raise RuntimeError("Existing traffic control has untracked child filters; recovery refused")
+            stale_filter_prefs = set()
+            for item in filter_inventory:
+                if not isinstance(item, dict):
+                    raise RuntimeError("Existing traffic control has untracked child filters; recovery refused")
+                pref = item.get("pref")
+                if type(pref) is int and pref in recorded_ids:
+                    stale_filter_prefs.add(pref)
+                else:
+                    raise RuntimeError("Existing traffic control has untracked child filters; recovery refused")
             if (
-                self._owns_root()
+                owned_root
                 and str(default) == "9999"
                 and {"1:1", "1:9999"}.issubset(classids)
             ):
+                # Clean up stale owned per-device filters/classes left behind by an unclean crash
+                for pref in sorted(stale_filter_prefs):
+                    await self._run_tc([
+                        "filter", "del", "dev", interface, "parent", "1:",
+                        "protocol", "ip", "pref", str(pref), "handle", str(pref), "flower",
+                    ], check=False)
+                for handle in sorted(child_classes):
+                    await self._run_tc([
+                        "class", "del", "dev", interface, "parent", "1:1",
+                        "classid", handle,
+                    ], check=False)
+                self._owned_class_ids.clear()
+                self._record_ownership()
                 return True
         raise RuntimeError(f"Existing traffic control on {interface} must be preserved")
 
@@ -208,7 +258,9 @@ class TrafficController:
         return result
 
     def _get_next_class_id(self) -> int:
-        """Get next available class ID."""
+        """Get next available class ID, reusing freed IDs first."""
+        if self._free_class_ids:
+            return self._free_class_ids.pop(0)
         class_id = self._next_class_id
         if class_id >= 0x9000:
             raise RuntimeError("Bandwidth class capacity exhausted")
@@ -232,6 +284,9 @@ class TrafficController:
         existing = self._limits.get(normalized_mac)
         class_id = existing.class_id if existing else self._get_next_class_id()
         created_resources = []
+        if existing is None:
+            self._owned_class_ids.update((class_id, class_id + 1))
+            self._record_ownership()
         try:
             for offset, direction, rate in ((0, "src_ip", upload_kbps), (1, "dst_ip", download_kbps)):
                 identifier = class_id + offset
@@ -289,6 +344,11 @@ class TrafficController:
                             ])
                     except Exception:
                         logger.exception("Failed to roll back partial bandwidth limit")
+                self._owned_class_ids.discard(class_id)
+                self._owned_class_ids.discard(class_id + 1)
+                self._record_ownership()
+                if class_id not in self._free_class_ids:
+                    self._free_class_ids.append(class_id)
             return False
 
     async def remove_bandwidth_limit(self, mac: str) -> bool:
@@ -320,6 +380,11 @@ class TrafficController:
                 resources.pop(0)
             self._limits.pop(normalized_mac)
             self._pending_removals.pop(normalized_mac, None)
+            self._owned_class_ids.discard(limit.class_id)
+            self._owned_class_ids.discard(limit.class_id + 1)
+            self._record_ownership()
+            if limit.class_id not in self._free_class_ids:
+                self._free_class_ids.append(limit.class_id)
             return True
         except Exception:
             logger.exception("Failed to remove directional bandwidth limit")
@@ -390,4 +455,6 @@ class TrafficController:
         logger.info("Shutting down traffic controller")
         await self._cleanup()
         self._limits.clear()
+        self._owned_class_ids.clear()
+        self._free_class_ids.clear()
         self._initialized = False

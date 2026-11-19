@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import struct
+from threading import RLock
 import time
 
 from scapy.layers.dns import DNS, DNSQR
@@ -83,49 +84,71 @@ class InlineInspector:
         self._max_flows = max_flows
         self._decision_ttl = decision_ttl_seconds
         self._clock = clock
+        self._lock = RLock()
         self._devices: dict[str, str] = {}
         self._flows: dict[tuple, _Flow] = {}
         self._allowed_flows: dict[tuple, float] = {}
         self._invalidated_flows: set[tuple] = set()
 
     def set_device(self, ip_address: str, mac: str) -> None:
-        for key in [key for key in self._allowed_flows if key[0] == ip_address]:
-            self._allowed_flows.pop(key, None)
-            self._invalidated_flows.add(key)
-        self._devices[ip_address] = normalize_mac(mac)
+        normalized = normalize_mac(mac)
+        with self._lock:
+            for key in [key for key in self._allowed_flows if key[0] == ip_address]:
+                self._allowed_flows.pop(key, None)
+                self._invalidated_flows.add(key)
+            self._devices[ip_address] = normalized
 
-    def remove_device(self, ip_address: str) -> None:
-        self._devices.pop(ip_address, None)
-        for key in [key for key in self._flows if key[0] == ip_address]:
-            self._flows.pop(key, None)
-        self._allowed_flows = {
-            key: created_at
-            for key, created_at in self._allowed_flows.items()
-            if key[0] != ip_address
-        }
-        self._invalidated_flows = {
-            key for key in self._invalidated_flows if key[0] != ip_address
-        }
+    def remove_device(self, ip_address: str) -> list[tuple]:
+        with self._lock:
+            self._devices.pop(ip_address, None)
+            removed_flows = [key for key in self._flows if key[0] == ip_address]
+            for key in removed_flows:
+                self._flows.pop(key, None)
+            self._allowed_flows = {
+                key: created_at
+                for key, created_at in self._allowed_flows.items()
+                if key[0] != ip_address
+            }
+            self._invalidated_flows = {
+                key for key in self._invalidated_flows if key[0] != ip_address
+            }
+            return removed_flows
 
     def get_device_mac(self, ip_address: str) -> str | None:
-        return self._devices.get(ip_address)
+        with self._lock:
+            return self._devices.get(ip_address)
+
+    def _evict_expired_allowed_locked(self, now: float) -> None:
+        stale = [
+            key
+            for key, last_seen in self._allowed_flows.items()
+            if now - last_seen > self._decision_ttl
+        ]
+        for key in stale:
+            self._allowed_flows.pop(key, None)
 
     def expire(self) -> list[tuple[tuple, InspectionVerdict]]:
-        """Remove overdue undecided flows and return restrictive decisions."""
-        now = self._clock()
-        expired = []
-        for key, flow in list(self._flows.items()):
-            if now - flow.created_at <= self._deadline:
-                continue
-            self._flows.pop(key, None)
-            protocol = "dns_tcp" if key[3] == 53 else "tls_sni"
-            expired.append((
-                key,
-                InspectionVerdict("drop", protocol=protocol, reason="inspection_timeout"),
-            ))
-        return expired
+        """Remove overdue undecided flows and stale idle allow decisions."""
+        with self._lock:
+            now = self._clock()
+            self._evict_expired_allowed_locked(now)
+            expired = []
+            for key, flow in list(self._flows.items()):
+                if now - flow.created_at <= self._deadline:
+                    continue
+                self._flows.pop(key, None)
+                protocol = "dns_tcp" if key[3] == 53 else "tls_sni"
+                expired.append((
+                    key,
+                    InspectionVerdict("drop", protocol=protocol, reason="inspection_timeout"),
+                ))
+            return expired
 
     def inspect(self, packet: PacketView) -> InspectionVerdict:
+        with self._lock:
+            return self._inspect_locked(packet)
+
+    def _inspect_locked(self, packet: PacketView) -> InspectionVerdict:
         mac = self._devices.get(packet.src_ip)
         if mac is None:
             return InspectionVerdict("accept")
@@ -224,9 +247,12 @@ class InlineInspector:
         return verdict
 
     def _remember_allowed_flow(self, key: tuple) -> bool:
+        now = self._clock()
         if key not in self._allowed_flows and len(self._allowed_flows) >= self._max_flows:
-            return False
-        self._allowed_flows[key] = self._clock()
+            self._evict_expired_allowed_locked(now)
+            if len(self._allowed_flows) >= self._max_flows:
+                return False
+        self._allowed_flows[key] = now
         return True
 
     def _dns_verdict(self, mac: str, payload: bytes, protocol: str) -> InspectionVerdict:

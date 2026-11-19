@@ -1,6 +1,10 @@
 """SQLAlchemy database models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from typing import Optional
 from sqlalchemy import (
     Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, Float, UniqueConstraint
@@ -23,8 +27,8 @@ class Device(Base):
     friendly_name = Column(String(255), nullable=True)
     is_monitored = Column(Boolean, default=False)
     is_blocked = Column(Boolean, default=False)
-    first_seen = Column(DateTime, default=datetime.utcnow)
-    last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    first_seen = Column(DateTime, default=_utc_now)
+    last_seen = Column(DateTime, default=_utc_now, onupdate=_utc_now)
     is_online = Column(Boolean, default=False)
 
     # Relationships
@@ -63,8 +67,8 @@ class DeviceRule(Base):
     canonical_value = Column(String(255), nullable=False, default=rule_identity_default)
     validation_error = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
 
     # Relationships
     device = relationship("Device", back_populates="rules")
@@ -93,7 +97,7 @@ class DeviceEnforcement(Base):
     component = Column(String(32), nullable=False)
     state = Column(String(16), nullable=False, default="pending")
     last_error = Column(String(255), nullable=True)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utc_now)
 
     device = relationship("Device", back_populates="enforcement_states")
 
@@ -104,7 +108,7 @@ class BandwidthLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=_utc_now, index=True)
     bytes_sent = Column(Integer, default=0)
     bytes_received = Column(Integer, default=0)
 
@@ -119,7 +123,7 @@ class AccessLog(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_id = Column(String(64), nullable=True, unique=True)
     device_id = Column(Integer, ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=_utc_now, index=True)
     domain = Column(String(255), nullable=False)
     action = Column(String(20), nullable=False)  # allowed, blocked
     app_name = Column(String(100), nullable=True)  # Detected app if any
@@ -149,7 +153,7 @@ class Setting(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
 
 
 class AdminCredential(Base):
@@ -160,7 +164,7 @@ class AdminCredential(Base):
     username = Column(String(255), nullable=False)
     password_hash = Column(String(255), nullable=False)
     version = Column(Integer, nullable=False, default=1)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utc_now)
 
 
 class BrowserSession(Base):
@@ -170,5 +174,5 @@ class BrowserSession(Base):
     credential_id = Column(Integer, ForeignKey("admin_credentials.id", ondelete="CASCADE"), nullable=False)
     credential_version = Column(Integer, nullable=False)
     csrf_token = Column(String(128), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=_utc_now)
     expires_at = Column(DateTime, nullable=False, index=True)

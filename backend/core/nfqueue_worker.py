@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from threading import Event, Thread
+from threading import Event, Lock, Thread
+import time
 
 from scapy.layers.inet import IP, TCP, UDP
 
@@ -23,6 +24,7 @@ class NFQueueWorker:
         self._queue = None
         self._thread = None
         self._stop = Event()
+        self._pending_lock = Lock()
         self._pending: dict[tuple, list] = {}
         self._failure: BaseException | None = None
 
@@ -85,10 +87,12 @@ class NFQueueWorker:
         key = self._flow_key(view)
         if verdict.action == "hold":
             packet.retain()
-            self._pending.setdefault(key, []).append(packet)
+            with self._pending_lock:
+                self._pending.setdefault(key, []).append(packet)
             return
 
-        queued = self._pending.pop(key, [])
+        with self._pending_lock:
+            queued = self._pending.pop(key, [])
         queued.append(packet)
         operation = "drop" if verdict.action == "drop" else "accept"
         for held in queued:
@@ -110,9 +114,20 @@ class NFQueueWorker:
                 reason=verdict.reason,
             ))
 
+    def drop_device_pending(self, ip_address: str) -> int:
+        """Drop any retained packets for a device removed from inspection."""
+        dropped = []
+        with self._pending_lock:
+            for key in [k for k in self._pending if k[0] == ip_address]:
+                dropped.extend(self._pending.pop(key, []))
+        for packet in dropped:
+            packet.drop()
+        return len(dropped)
+
     def poll_timeouts(self) -> None:
         for key, verdict in self._inspector.expire():
-            packets = self._pending.pop(key, [])
+            with self._pending_lock:
+                packets = self._pending.pop(key, [])
             for packet in packets:
                 packet.drop()
             if packets:
@@ -137,14 +152,20 @@ class NFQueueWorker:
             self._failure = None
 
             def run() -> None:
+                last_poll = time.monotonic()
                 try:
                     while not self._stop.is_set():
+                        idle = False
                         try:
                             self._queue.run(block=False)
                         except BlockingIOError:
-                            pass
-                        self.poll_timeouts()
-                        self._stop.wait(0.01)
+                            idle = True
+                        now = time.monotonic()
+                        if idle or now - last_poll >= 0.1:
+                            self.poll_timeouts()
+                            last_poll = now
+                        if idle:
+                            self._stop.wait(0.01)
                 except BaseException as error:
                     self._failure = error
                     logger.exception("NFQUEUE worker failed")
@@ -171,10 +192,12 @@ class NFQueueWorker:
         self._thread.join(timeout)
         if self._thread.is_alive():
             raise RuntimeError("NFQUEUE worker did not stop")
-        for packets in self._pending.values():
+        with self._pending_lock:
+            pending_batches = list(self._pending.values())
+            self._pending.clear()
+        for packets in pending_batches:
             for packet in packets:
                 packet.drop()
-        self._pending.clear()
         self._queue.unbind()
         self._queue = None
         self._thread = None

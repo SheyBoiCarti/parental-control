@@ -6,7 +6,11 @@ import struct
 from typing import Optional, Dict, Callable, List, Set
 from dataclasses import dataclass
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 from scapy.all import (
     sniff, DNS, DNSQR, DNSRR, IP, TCP, UDP, Raw, conf
@@ -107,7 +111,7 @@ class PacketAnalyzer:
                     src_mac=src_mac,
                     domain=query_name,
                     query_type=query_type,
-                    timestamp=datetime.utcnow()
+                    timestamp=_utc_now()
                 )
 
                 self.dns_query_count += 1
@@ -170,7 +174,7 @@ class PacketAnalyzer:
                     dst_ip=dst_ip,
                     dst_port=dst_port,
                     sni=sni,
-                    timestamp=datetime.utcnow()
+                    timestamp=_utc_now()
                 )
 
                 self.tls_connection_count += 1

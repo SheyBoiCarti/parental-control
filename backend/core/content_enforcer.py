@@ -166,6 +166,8 @@ class ContentEnforcer:
                 except Exception:
                     logger.exception("Failed to roll back content queue rule")
             self._inspector.remove_device(address)
+            if hasattr(self._worker, "drop_device_pending"):
+                self._worker.drop_device_pending(address)
             return False
         self._devices[normalized_mac] = (address, fingerprint, specs)
         return True
@@ -188,6 +190,8 @@ class ContentEnforcer:
             return False
         self._devices.pop(normalized_mac, None)
         self._inspector.remove_device(address)
+        if hasattr(self._worker, "drop_device_pending"):
+            self._worker.drop_device_pending(address)
         return True
 
     async def shutdown(self) -> None:

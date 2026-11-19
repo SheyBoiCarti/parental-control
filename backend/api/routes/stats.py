@@ -1,7 +1,11 @@
 """Statistics API routes."""
 
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func
@@ -138,7 +142,7 @@ async def get_device_bandwidth_stats(
             raise HTTPException(status_code=404, detail=f"Device not found: {mac}")
 
         # Get bandwidth logs for time period
-        since = datetime.utcnow() - timedelta(hours=hours)
+        since = _utc_now() - timedelta(hours=hours)
 
         result = await session.execute(
             select(BandwidthLog)
@@ -212,7 +216,7 @@ async def get_device_access_stats(
         if not device:
             raise HTTPException(status_code=404, detail=f"Device not found: {mac}")
 
-        since = datetime.utcnow() - timedelta(hours=hours)
+        since = _utc_now() - timedelta(hours=hours)
 
         # Get total counts
         total_result = await session.execute(
@@ -272,7 +276,7 @@ async def get_top_domains(
     user: str = Depends(get_current_user)
 ):
     """Get top accessed domains across all devices."""
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = _utc_now() - timedelta(hours=hours)
 
     async with get_session() as session:
         result = await session.execute(
@@ -302,7 +306,7 @@ async def get_top_blocked(
     user: str = Depends(get_current_user)
 ):
     """Get top blocked domains across all devices."""
-    since = datetime.utcnow() - timedelta(hours=hours)
+    since = _utc_now() - timedelta(hours=hours)
 
     async with get_session() as session:
         result = await session.execute(

@@ -1,5 +1,6 @@
 """Device management API routes."""
 
+from contextlib import asynccontextmanager
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Response, status
 from pydantic import BaseModel, Field
@@ -68,6 +69,22 @@ def get_app_state():
             detail="Service not initialized"
         )
     return _app_state
+
+
+@asynccontextmanager
+async def _device_mutation(reconciler, mac: str):
+    """Serialize device intent writes and reconciliation under the per-MAC lock."""
+    mutation = getattr(reconciler, "mutation", None)
+    if mutation is None:
+        yield
+        return
+    async with mutation(mac):
+        yield
+
+
+async def _reconcile_mutation(reconciler, mac: str):
+    method = getattr(reconciler, "reconcile_mutation", reconciler.reconcile)
+    return await method(mac)
 
 
 def _device_payload(device, result) -> dict:
@@ -140,23 +157,24 @@ async def update_device(
             except ValueError as error:
                 raise HTTPException(422, str(error)) from error
 
-    device = await state.device_manager.update_device(
-        mac=mac,
-        friendly_name=update.friendly_name,
-        is_monitored=update.is_monitored,
-        is_blocked=update.is_blocked
-    )
-
-    if not device:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Device not found: {mac}"
+    async with _device_mutation(state.reconciler, mac):
+        device = await state.device_manager.update_device(
+            mac=mac,
+            friendly_name=update.friendly_name,
+            is_monitored=update.is_monitored,
+            is_blocked=update.is_blocked
         )
 
-    if update.is_blocked is not None or update.is_monitored is not None:
-        result = await state.reconciler.reconcile(mac)
-    else:
-        result = await state.reconciler.get_status(mac)
+        if not device:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Device not found: {mac}"
+            )
+
+        if update.is_blocked is not None or update.is_monitored is not None:
+            result = await _reconcile_mutation(state.reconciler, mac)
+        else:
+            result = await state.reconciler.get_status(mac)
     payload = _device_payload(device, result)
 
     # Broadcast update
@@ -188,8 +206,9 @@ async def block_device(
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
-    device = await state.device_manager.update_device(mac, is_blocked=True)
-    result = await state.reconciler.reconcile(mac)
+    async with _device_mutation(state.reconciler, mac):
+        device = await state.device_manager.update_device(mac, is_blocked=True)
+        result = await _reconcile_mutation(state.reconciler, mac)
     payload = _device_payload(device, result)
 
     # Broadcast update
@@ -215,10 +234,10 @@ async def unblock_device(
             detail=f"Device not found: {mac}"
         )
 
-    # Update database
-    device = await state.device_manager.update_device(mac, is_blocked=False)
-
-    result = await state.reconciler.reconcile(mac)
+    async with _device_mutation(state.reconciler, mac):
+        # Update database
+        device = await state.device_manager.update_device(mac, is_blocked=False)
+        result = await _reconcile_mutation(state.reconciler, mac)
     payload = _device_payload(device, result)
 
     # Broadcast update
@@ -250,10 +269,10 @@ async def start_monitoring(
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 
-    # Update database
-    device = await state.device_manager.update_device(mac, is_monitored=True)
-
-    result = await state.reconciler.reconcile(mac)
+    async with _device_mutation(state.reconciler, mac):
+        # Update database
+        device = await state.device_manager.update_device(mac, is_monitored=True)
+        result = await _reconcile_mutation(state.reconciler, mac)
     payload = _device_payload(device, result)
 
     # Broadcast update
@@ -279,10 +298,10 @@ async def stop_monitoring(
             detail=f"Device not found: {mac}"
         )
 
-    # Update database
-    device = await state.device_manager.update_device(mac, is_monitored=False)
-
-    result = await state.reconciler.reconcile(mac)
+    async with _device_mutation(state.reconciler, mac):
+        # Update database
+        device = await state.device_manager.update_device(mac, is_monitored=False)
+        result = await _reconcile_mutation(state.reconciler, mac)
     payload = _device_payload(device, result)
 
     # Broadcast update
@@ -310,6 +329,11 @@ async def trigger_scan(user: str = Depends(get_current_user)):
         payload = _device_payload(device, enforcement)
         payloads.append(payload)
         device_list.append(DeviceResponse(**payload))
+
+    analyzer = getattr(state, "packet_analyzer", None)
+    if analyzer is not None:
+        mapping = {device.ip_address: device.mac_address for device in devices if device.ip_address}
+        analyzer.set_ip_mac_mapping(mapping)
 
     # Broadcast full device list
     await ws_manager.broadcast_devices_list(payloads)

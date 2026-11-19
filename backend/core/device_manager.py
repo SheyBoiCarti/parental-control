@@ -4,7 +4,11 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, field
 
@@ -239,7 +243,7 @@ class DeviceManager:
                     # Update existing device
                     device.ip_address = disc.ip_address
                     device.is_online = True
-                    device.last_seen = datetime.utcnow()
+                    device.last_seen = _utc_now()
 
                     # Update hostname if we got one and didn't have one
                     if disc.hostname and not device.hostname:
@@ -262,7 +266,7 @@ class DeviceManager:
                 updated_devices.append(device)
 
             # Mark devices not seen in scan as offline (if last seen > 5 minutes ago)
-            offline_threshold = datetime.utcnow() - timedelta(minutes=5)
+            offline_threshold = _utc_now() - timedelta(minutes=5)
             await session.execute(
                 update(Device)
                 .where(Device.mac_address.notin_(discovered_macs))

@@ -15,12 +15,12 @@ def get_interface_ip(interface: str) -> Optional[str]:
     """Get the IP address of a network interface."""
     import fcntl
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ip_bytes = fcntl.ioctl(
-            sock.fileno(),
-            0x8915,  # SIOCGIFADDR
-            struct.pack('256s', interface[:15].encode('utf-8'))
-        )[20:24]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            ip_bytes = fcntl.ioctl(
+                sock.fileno(),
+                0x8915,  # SIOCGIFADDR
+                struct.pack('256s', interface[:15].encode('utf-8'))
+            )[20:24]
         return socket.inet_ntoa(ip_bytes)
     except (IOError, OSError) as e:
         logger.error(f"Failed to get IP for interface {interface}: {e}")
@@ -31,12 +31,12 @@ def get_interface_mac(interface: str) -> Optional[str]:
     """Get the MAC address of a network interface."""
     import fcntl
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        info = fcntl.ioctl(
-            sock.fileno(),
-            0x8927,  # SIOCGIFHWADDR
-            struct.pack('256s', interface[:15].encode('utf-8'))
-        )
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            info = fcntl.ioctl(
+                sock.fileno(),
+                0x8927,  # SIOCGIFHWADDR
+                struct.pack('256s', interface[:15].encode('utf-8'))
+            )
         mac_bytes = info[18:24]
         return ':'.join(f'{b:02X}' for b in mac_bytes)
     except (IOError, OSError) as e:
@@ -48,12 +48,12 @@ def get_interface_netmask(interface: str) -> Optional[str]:
     """Get the netmask of a network interface."""
     import fcntl
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        netmask_bytes = fcntl.ioctl(
-            sock.fileno(),
-            0x891b,  # SIOCGIFNETMASK
-            struct.pack('256s', interface[:15].encode('utf-8'))
-        )[20:24]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            netmask_bytes = fcntl.ioctl(
+                sock.fileno(),
+                0x891b,  # SIOCGIFNETMASK
+                struct.pack('256s', interface[:15].encode('utf-8'))
+            )[20:24]
         return socket.inet_ntoa(netmask_bytes)
     except (IOError, OSError) as e:
         logger.error(f"Failed to get netmask for interface {interface}: {e}")
@@ -72,7 +72,7 @@ def get_default_gateway() -> Optional[Tuple[str, str]]:
         with open('/proc/net/route', 'r') as f:
             for line in f.readlines()[1:]:  # Skip header
                 fields = line.strip().split()
-                if fields[1] == '00000000':  # Default route
+                if len(fields) >= 4 and fields[1] == '00000000' and (int(fields[3], 16) & 0x3) == 0x3:  # Active default gateway
                     interface = fields[0]
                     gateway_hex = fields[2]
                     # Convert hex to IP (little-endian)
